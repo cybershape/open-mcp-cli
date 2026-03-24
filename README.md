@@ -116,6 +116,26 @@ Use the global `--config` option to override that path.
 
 Use the top-level `--url` option to override the configured URL without writing it back to the config file.
 
+## Release
+
+Create the next patch release, commit the version bump, create a `v*` tag, and push that tag:
+
+```bash
+./publish.sh
+```
+
+Create a specific release version instead:
+
+```bash
+./publish.sh 0.1.1
+```
+
+The script updates `Cargo.toml`, verifies the project with `cargo check`, commits the release version, creates a tag like `v0.1.1`, and pushes that tag to `origin`.
+
+Pushing a `v*` tag triggers the GitHub Actions release workflow, which builds release archives for Linux and macOS on both x86_64 and arm64, then uploads those archives to a GitHub Release.
+
+This repository does not publish a Homebrew formula.
+
 ## Daemon
 
 The `daemon` subcommand is intentionally hidden from the generated CLI help, but it is supported and documented here.
