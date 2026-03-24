@@ -57,7 +57,7 @@ jobs:
           done
 
       - name: Upload Linux packaged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-linux
           path: |
@@ -99,7 +99,7 @@ jobs:
           done
 
       - name: Upload macOS packaged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-macos
           path: |
@@ -115,12 +115,13 @@ jobs:
 
     steps:
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*/*.tar.gz
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/*/*.tar.gz --generate-notes
