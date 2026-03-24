@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 mod daemon;
 mod tool;
 
+pub(crate) const CLI_COMMAND_NAME: &str = "omc";
+
 #[derive(Parser, Debug)]
-#[command(name = "ones-mcp-cli")]
+#[command(name = CLI_COMMAND_NAME)]
 #[command(about = "ONES MCP command line interface")]
 struct Cli {
     /// Path to the config file
@@ -562,7 +564,7 @@ fn read_stored_config(config_path: &Path) -> Result<StoredConfig, String> {
 }
 
 fn missing_url_error(config_path: &Path, config_override: Option<&Path>) -> String {
-    let mut command = String::from("mcp-cli");
+    let mut command = String::from(CLI_COMMAND_NAME);
 
     if let Some(path) = config_override {
         command.push_str(" --config ");

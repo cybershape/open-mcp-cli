@@ -30,7 +30,7 @@ fn accepts_https_url() {
 
 #[test]
 fn parses_top_level_url_override() {
-    let cli = Cli::try_parse_from(["mcp-cli", "--url", "https://example.com", "daemon", "run"])
+    let cli = Cli::try_parse_from(["omc", "--url", "https://example.com", "daemon", "run"])
         .expect("expected top-level url override");
 
     assert_eq!(cli.url.as_deref(), Some("https://example.com"));
@@ -40,7 +40,7 @@ fn parses_top_level_url_override() {
 #[test]
 fn preserves_tool_url_arguments_after_tool_name() {
     let cli = Cli::try_parse_from([
-        "mcp-cli",
+        "omc",
         "--url",
         "https://example.com",
         "sample_tool",
@@ -100,7 +100,7 @@ fn missing_url_error_uses_default_command() {
     let error = missing_url_error(Path::new("/tmp/config.toml"), None);
     assert_eq!(
         error,
-        "missing `url` in config file /tmp/config.toml. Configure it with: mcp-cli config --url <URL>"
+        "missing `url` in config file /tmp/config.toml. Configure it with: omc config --url <URL>"
     );
 }
 
@@ -112,13 +112,13 @@ fn missing_url_error_includes_config_override() {
     );
     assert_eq!(
         error,
-        "missing `url` in config file /tmp/custom-config.toml. Configure it with: mcp-cli --config /tmp/custom-config.toml config --url <URL>"
+        "missing `url` in config file /tmp/custom-config.toml. Configure it with: omc --config /tmp/custom-config.toml config --url <URL>"
     );
 }
 
 #[test]
 fn strips_clap_error_prefix() {
-    let error = Cli::try_parse_from(["mcp-cli", "config", "--url", "ftp://example.com"])
+    let error = Cli::try_parse_from(["omc", "config", "--url", "ftp://example.com"])
         .expect_err("expected clap parse error");
     assert_eq!(
         format_clap_error(&error),
@@ -129,19 +129,19 @@ fn strips_clap_error_prefix() {
 #[test]
 fn parses_config_show_subcommand() {
     let cli =
-        Cli::try_parse_from(["mcp-cli", "config", "show"]).expect("expected config show to parse");
+        Cli::try_parse_from(["omc", "config", "show"]).expect("expected config show to parse");
     assert!(matches!(cli.command, Some(crate::Commands::Config(_))));
 }
 
 #[test]
 fn parses_hidden_daemon_run_subcommand() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "run"]).expect("expected daemon to parse");
+    let cli = Cli::try_parse_from(["omc", "daemon", "run"]).expect("expected daemon to parse");
     assert!(matches!(cli.command, Some(crate::Commands::Daemon(_))));
 }
 
 #[test]
 fn parses_hidden_daemon_foreground_subcommand() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "run", "--foreground"])
+    let cli = Cli::try_parse_from(["omc", "daemon", "run", "--foreground"])
         .expect("expected daemon foreground to parse");
     assert!(matches!(cli.command, Some(crate::Commands::Daemon(_))));
 }
@@ -149,7 +149,7 @@ fn parses_hidden_daemon_foreground_subcommand() {
 #[test]
 fn daemon_socket_override_is_available_for_background_run() {
     let cli = Cli::try_parse_from([
-        "mcp-cli",
+        "omc",
         "daemon",
         "--socket",
         "/tmp/ones-mcp-cli.sock",
@@ -165,7 +165,7 @@ fn daemon_socket_override_is_available_for_background_run() {
 
 #[test]
 fn daemon_run_accepts_top_level_url_override() {
-    let cli = Cli::try_parse_from(["mcp-cli", "--url", "https://example.com", "daemon", "run"])
+    let cli = Cli::try_parse_from(["omc", "--url", "https://example.com", "daemon", "run"])
         .expect("expected daemon run with top-level url override");
 
     assert_eq!(cli.url.as_deref(), Some("https://example.com"));
@@ -173,7 +173,7 @@ fn daemon_run_accepts_top_level_url_override() {
 
 #[test]
 fn daemon_commands_do_not_require_program_startup_daemon_check() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "run"]).expect("expected daemon run");
+    let cli = Cli::try_parse_from(["omc", "daemon", "run"]).expect("expected daemon run");
     assert!(!command_requires_daemon_ready(cli.command.as_ref()));
     assert!(!command_requires_runtime_checks(cli.command.as_ref()));
     assert!(command_requires_config_url(cli.command.as_ref()));
@@ -181,7 +181,7 @@ fn daemon_commands_do_not_require_program_startup_daemon_check() {
 
 #[test]
 fn config_commands_do_not_require_program_startup_daemon_check() {
-    let cli = Cli::try_parse_from(["mcp-cli", "config", "show"]).expect("expected config show");
+    let cli = Cli::try_parse_from(["omc", "config", "show"]).expect("expected config show");
     assert!(!command_requires_daemon_ready(cli.command.as_ref()));
     assert!(!command_requires_runtime_checks(cli.command.as_ref()));
     assert!(!command_requires_config_url(cli.command.as_ref()));
@@ -189,31 +189,31 @@ fn config_commands_do_not_require_program_startup_daemon_check() {
 
 #[test]
 fn no_command_requires_program_startup_daemon_check() {
-    let cli = Cli::try_parse_from(["mcp-cli"]).expect("expected empty invocation to parse");
+    let cli = Cli::try_parse_from(["omc"]).expect("expected empty invocation to parse");
     assert!(command_requires_daemon_ready(cli.command.as_ref()));
 }
 
 #[test]
 fn no_command_requires_runtime_checks() {
-    let cli = Cli::try_parse_from(["mcp-cli"]).expect("expected empty invocation to parse");
+    let cli = Cli::try_parse_from(["omc"]).expect("expected empty invocation to parse");
     assert!(command_requires_runtime_checks(cli.command.as_ref()));
 }
 
 #[test]
 fn no_command_requires_config_url() {
-    let cli = Cli::try_parse_from(["mcp-cli"]).expect("expected empty invocation to parse");
+    let cli = Cli::try_parse_from(["omc"]).expect("expected empty invocation to parse");
     assert!(command_requires_config_url(cli.command.as_ref()));
 }
 
 #[test]
 fn daemon_status_does_not_require_config_url() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "status"]).expect("expected daemon status");
+    let cli = Cli::try_parse_from(["omc", "daemon", "status"]).expect("expected daemon status");
     assert!(!command_requires_config_url(cli.command.as_ref()));
 }
 
 #[test]
 fn tool_commands_require_runtime_checks_and_daemon() {
-    let cli = Cli::try_parse_from(["mcp-cli", "who_am_i"]).expect("expected tool command");
+    let cli = Cli::try_parse_from(["omc", "who_am_i"]).expect("expected tool command");
     assert!(command_requires_runtime_checks(cli.command.as_ref()));
     assert!(command_requires_config_url(cli.command.as_ref()));
     assert!(command_requires_daemon_ready(cli.command.as_ref()));
@@ -221,19 +221,19 @@ fn tool_commands_require_runtime_checks_and_daemon() {
 
 #[test]
 fn parses_hidden_daemon_status_subcommand() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "status"]).expect("expected daemon status");
+    let cli = Cli::try_parse_from(["omc", "daemon", "status"]).expect("expected daemon status");
     assert!(matches!(cli.command, Some(crate::Commands::Daemon(_))));
 }
 
 #[test]
 fn parses_hidden_daemon_exit_subcommand() {
-    let cli = Cli::try_parse_from(["mcp-cli", "daemon", "exit"]).expect("expected daemon exit");
+    let cli = Cli::try_parse_from(["omc", "daemon", "exit"]).expect("expected daemon exit");
     assert!(matches!(cli.command, Some(crate::Commands::Daemon(_))));
 }
 
 #[test]
 fn parses_external_tool_subcommand() {
-    let cli = Cli::try_parse_from(["mcp-cli", "who_am_i", "--includeDetails", "true"])
+    let cli = Cli::try_parse_from(["omc", "who_am_i", "--includeDetails", "true"])
         .expect("expected external tool command");
 
     match cli.command {

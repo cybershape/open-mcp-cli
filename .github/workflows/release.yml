@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  BINARY_NAME: mcp-cli
+  BINARY_NAME: omc
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -46,7 +46,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --bin "${BINARY_NAME}"
 
       - name: Package archive
         shell: bash

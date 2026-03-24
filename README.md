@@ -14,13 +14,13 @@ The CLI checks these prerequisites on startup for every invocation except `confi
 Run the CLI without any arguments to show help:
 
 ```bash
-cargo run --
+omc
 ```
 
 Show the same help explicitly:
 
 ```bash
-cargo run -- -h
+omc -h
 ```
 
 When no command is provided, the CLI still completes the startup checks first and then prints help. When the current URL's cached `tools.json` is available, the root help appends every cached MCP tool to the existing `Commands:` section, using the tool name and a single-line `description` preview capped at 100 characters. Longer descriptions end with `...`.
@@ -30,7 +30,7 @@ If a check fails, the CLI prints a clear error and exits with a non-zero status.
 If `url` is missing, the CLI prints a setup hint such as:
 
 ```text
-fatal error: missing `url` in config file ~/.config/ones-mcp-cli/config.toml. Configure it with: mcp-cli config --url <URL>
+fatal error: missing `url` in config file ~/.config/ones-mcp-cli/config.toml. Configure it with: omc config --url <URL>
 ```
 
 ## Usage
@@ -38,70 +38,70 @@ fatal error: missing `url` in config file ~/.config/ones-mcp-cli/config.toml. Co
 Save the service URL:
 
 ```bash
-cargo run -- config --url https://example.com
+omc config --url https://example.com
 ```
 
 Temporarily override the configured URL for a single invocation:
 
 ```bash
-cargo run -- --url https://example.com daemon run
-cargo run -- --url https://example.com who_am_i
+omc --url https://example.com daemon run
+omc --url https://example.com who_am_i
 ```
 
 Show the current configuration:
 
 ```bash
-cargo run -- config show
+omc config show
 ```
 
 Call a cached MCP tool by command name and pass tool arguments with `--<parameter> <value>`:
 
 ```bash
-cargo run -- who_am_i
-cargo run -- get_issue_details --issueID ISSUE-123
-cargo run -- add_project_members --projectID 123 --members u1 --members u2
+omc who_am_i
+omc get_issue_details --issueID ISSUE-123
+omc add_project_members --projectID 123 --members u1 --members u2
 ```
 
 Show parameter help for a cached MCP tool:
 
 ```bash
-cargo run -- get_issue_details --help
+omc get_issue_details --help
 ```
 
 Start the hidden daemon in the background:
 
 ```bash
-cargo run -- daemon run
+omc daemon run
 ```
 
 Start the hidden daemon in the foreground:
 
 ```bash
-cargo run -- daemon run --foreground
+omc daemon run --foreground
 ```
 
 Query daemon status:
 
 ```bash
-cargo run -- daemon status
+omc daemon status
 ```
 
 Exit the daemon:
 
 ```bash
-cargo run -- daemon exit
+omc daemon exit
 ```
 
 Start the daemon on a custom Unix socket path:
 
 ```bash
-cargo run -- daemon --socket /tmp/ones-mcp-cli.sock run
+omc daemon --socket /tmp/ones-mcp-cli.sock run
 ```
 
 Save the service URL to a custom config file:
 
 ```bash
-cargo run -- --config /tmp/ones-mcp-cli/config.toml config --url https://example.com
+omc --config /tmp/ones-mcp-cli/config.toml config --url https://example.com
 ```
 
 The URL must start with `http://` or `https://`.
@@ -130,7 +130,7 @@ Create a specific release version instead:
 ./publish.sh 0.1.1
 ```
 
-The script updates `Cargo.toml`, verifies the project with `cargo check`, commits the release version, creates a tag like `v0.1.1`, and pushes that tag to `origin`.
+The script updates the project version, verifies the project, commits the release version, creates a tag like `v0.1.1`, and pushes that tag to `origin`.
 
 Pushing a `v*` tag triggers the GitHub Actions release workflow, which builds release archives for Linux and macOS on both x86_64 and arm64, then uploads those archives to a GitHub Release.
 

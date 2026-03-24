@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::{Map, Number, Value};
 
+use crate::CLI_COMMAND_NAME;
 use crate::daemon::{self, CachedTool};
 
 pub(crate) async fn run_tool_command(
@@ -75,9 +76,10 @@ fn parse_tool_arguments(
         .collect::<Vec<_>>();
     if !missing.is_empty() {
         return Err(format!(
-            "missing required parameters for `{}`: {}. Use `ones-mcp-cli {} --help`.",
+            "missing required parameters for `{}`: {}. Use `{} {} --help`.",
             tool.name,
             missing.join(", "),
+            CLI_COMMAND_NAME,
             tool.name
         )
         .into());
@@ -124,8 +126,8 @@ fn collect_raw_parameter_values(
 
         if !properties.contains_key(name.as_str()) {
             return Err(format!(
-                "unknown parameter `--{name}` for tool `{}`. Use `ones-mcp-cli {} --help`.",
-                tool.name, tool.name
+                "unknown parameter `--{name}` for tool `{}`. Use `{} {} --help`.",
+                tool.name, CLI_COMMAND_NAME, tool.name
             )
             .into());
         }
@@ -343,8 +345,8 @@ fn render_tool_help(tool: &CachedTool) -> String {
     }
 
     output.push_str(&format!(
-        "Usage: ones-mcp-cli {} [--<parameter> <value>]\n",
-        tool.name
+        "Usage: {} {} [--<parameter> <value>]\n",
+        CLI_COMMAND_NAME, tool.name
     ));
 
     if !parameters.is_empty() {
@@ -544,7 +546,7 @@ mod tests {
     fn renders_tool_help_with_parameter_list() {
         let help = render_tool_help(&sample_tool());
 
-        assert!(help.contains("Usage: ones-mcp-cli sample"));
+        assert!(help.contains("Usage: omc sample"));
         assert!(help.contains("--issueID <STRING>"));
         assert!(help.contains("--members <STRING>..."));
         assert!(help.contains("[required]"));

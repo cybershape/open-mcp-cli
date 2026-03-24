@@ -21,6 +21,8 @@ use tokio::signal;
 use tokio::sync::watch;
 use tokio::time::{interval, sleep};
 
+use crate::CLI_COMMAND_NAME;
+
 const DAEMON_READY_RETRIES: usize = 100;
 const DAEMON_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TOOL_CACHE_READY_RETRIES: usize = 600;
@@ -298,7 +300,7 @@ pub(crate) async fn call_tool(
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    let initialize_id = Value::String("ones-mcp-cli-client:initialize".to_owned());
+    let initialize_id = Value::String(format!("{CLI_COMMAND_NAME}-client:initialize"));
     write_downstream_message(
         &mut writer,
         &json!({
@@ -309,7 +311,7 @@ pub(crate) async fn call_tool(
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "ones-mcp-cli",
+                    "name": CLI_COMMAND_NAME,
                     "version": env!("CARGO_PKG_VERSION"),
                 }
             }
@@ -327,7 +329,7 @@ pub(crate) async fn call_tool(
     )
     .await?;
 
-    let request_id = Value::String("ones-mcp-cli-client:tools/call".to_owned());
+    let request_id = Value::String(format!("{CLI_COMMAND_NAME}-client:tools/call"));
     write_downstream_message(
         &mut writer,
         &json!({
@@ -1034,7 +1036,7 @@ async fn initialize_upstream(
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "ones-mcp-cli-daemon",
+                    "name": format!("{CLI_COMMAND_NAME}-daemon"),
                     "version": env!("CARGO_PKG_VERSION"),
                 }
             }
@@ -1453,7 +1455,7 @@ fn parse_list_tools_result(message: &Value) -> Result<ListToolsResult, Box<dyn E
 }
 
 fn next_daemon_request_id(counter: &mut u64) -> Value {
-    let request_id = Value::String(format!("ones-mcp-cli-daemon:{counter}"));
+    let request_id = Value::String(format!("{CLI_COMMAND_NAME}-daemon:{counter}"));
     *counter += 1;
     request_id
 }
@@ -1758,12 +1760,12 @@ mod tests {
 
     #[test]
     fn rejects_unexpected_daemon_status_response() {
-        let error = parse_status_response("running mcp-cli 0.1.0, pid 42")
+        let error = parse_status_response("running omc 0.1.0, pid 42")
             .expect_err("expected daemon status parse failure");
 
         assert_eq!(
             error.to_string(),
-            "unexpected daemon status response: running mcp-cli 0.1.0, pid 42"
+            "unexpected daemon status response: running omc 0.1.0, pid 42"
         );
     }
 
