@@ -445,7 +445,9 @@ fn root_help_includes_cached_tools_when_available() {
             "url": "https://example.com",
             "tools": [
                 { "name": "alpha", "description": "Alpha tool" },
-                { "name": "beta", "description": "Beta tool" }
+                { "name": "beta", "description": "Beta tool" },
+                { "name": "fetch", "description": "Fetch tool" },
+                { "name": "search", "description": "Search tool" }
             ]
         })
         .to_string(),
@@ -457,6 +459,10 @@ fn root_help_includes_cached_tools_when_available() {
     assert_eq!(help.matches("\nCommands:\n").count(), 1);
     assert!(help.contains("alpha"));
     assert!(help.contains("Alpha tool"));
+    assert!(!help.contains("fetch"));
+    assert!(!help.contains("Fetch tool"));
+    assert!(!help.contains("search"));
+    assert!(!help.contains("Search tool"));
     assert!(help.contains("config"));
     assert!(help.contains("  config  "));
     assert!(help.contains("  help  "));

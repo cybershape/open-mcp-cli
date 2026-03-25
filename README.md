@@ -49,7 +49,7 @@ Show the same help explicitly:
 omc -h
 ```
 
-When no command is provided, the CLI still completes the startup checks first and then prints help. When the current URL's cached `tools.json` is available, the root help appends every cached MCP tool to the existing `Commands:` section, using the tool name and a single-line `description` preview capped at 100 characters. Longer descriptions end with `...`.
+When no command is provided, the CLI still completes the startup checks first and then prints help. When the current URL's cached `tools.json` is available, the root help appends cached MCP tools to the existing `Commands:` section, excluding `search` and `fetch`, and using each tool name with a single-line `description` preview capped at 100 characters. Longer descriptions end with `...`.
 
 If a check fails, the CLI prints a clear error and exits with a non-zero status.
 
@@ -94,6 +94,8 @@ Show parameter help for a cached MCP tool:
 omc get_issue_details --help
 omc help get_issue_details
 ```
+
+Required parameters are listed first in tool help output. Remaining parameters follow the order defined in the tool input schema.
 
 Start the hidden daemon in the background:
 

@@ -17,6 +17,7 @@ const CLI_ABOUT: &str = concat!(
     "ONES MCP command line interface ",
     env!("CARGO_PKG_VERSION")
 );
+const ROOT_HELP_HIDDEN_TOOLS: &[&str] = &["search", "fetch"];
 
 #[derive(Parser, Debug)]
 #[command(name = CLI_COMMAND_NAME)]
@@ -230,8 +231,9 @@ fn render_root_help_with_tools(socket_override: Option<&Path>, url: Option<&str>
 
     if let Some(url) = url {
         if let Ok(tools) = daemon::read_cached_tool_summaries(url, socket_override) {
-            if !tools.is_empty() {
-                help = replace_commands_section(&help, &tools);
+            let visible_tools = filter_root_help_tools(tools);
+            if !visible_tools.is_empty() {
+                help = replace_commands_section(&help, &visible_tools);
             }
         }
     }
@@ -241,6 +243,13 @@ fn render_root_help_with_tools(socket_override: Option<&Path>, url: Option<&str>
     }
 
     help
+}
+
+fn filter_root_help_tools(tools: Vec<daemon::CachedToolSummary>) -> Vec<daemon::CachedToolSummary> {
+    tools
+        .into_iter()
+        .filter(|tool| !ROOT_HELP_HIDDEN_TOOLS.contains(&tool.name.as_str()))
+        .collect()
 }
 
 fn replace_commands_section(help: &str, tools: &[daemon::CachedToolSummary]) -> String {

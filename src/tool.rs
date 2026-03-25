@@ -59,13 +59,12 @@ fn parse_tool_arguments(
 ) -> Result<Map<String, Value>, Box<dyn Error>> {
     let properties = tool_properties(tool);
     let required = required_properties(tool);
-    let raw_values = collect_raw_parameter_values(tool, args, &properties)?;
+    let raw_values = collect_raw_parameter_values(tool, args, properties)?;
     let mut arguments = Map::new();
 
     for (name, values) in &raw_values {
         let schema = properties
-            .get(name.as_str())
-            .copied()
+            .and_then(|properties| properties.get(name.as_str()))
             .ok_or_else(|| format!("unknown parameter `--{name}` for tool `{}`", tool.name))?;
         arguments.insert(name.clone(), parse_parameter_values(name, schema, values)?);
     }
@@ -91,7 +90,7 @@ fn parse_tool_arguments(
 fn collect_raw_parameter_values(
     tool: &CachedTool,
     args: &[OsString],
-    properties: &BTreeMap<&str, &Value>,
+    properties: Option<&Map<String, Value>>,
 ) -> Result<BTreeMap<String, Vec<String>>, Box<dyn Error>> {
     let mut values = BTreeMap::<String, Vec<String>>::new();
     let mut index = 0;
@@ -124,7 +123,7 @@ fn collect_raw_parameter_values(
             (name, value, true)
         };
 
-        if !properties.contains_key(name.as_str()) {
+        if !properties.is_some_and(|properties| properties.contains_key(name.as_str())) {
             return Err(format!(
                 "unknown parameter `--{name}` for tool `{}`. Use `{} {} --help`.",
                 tool.name, CLI_COMMAND_NAME, tool.name
@@ -290,17 +289,10 @@ fn is_array_schema(schema: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn tool_properties<'a>(tool: &'a CachedTool) -> BTreeMap<&'a str, &'a Value> {
+fn tool_properties(tool: &CachedTool) -> Option<&Map<String, Value>> {
     tool.input_schema
         .get("properties")
         .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(name, schema)| (name.as_str(), schema))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default()
 }
 
 fn required_properties(tool: &CachedTool) -> BTreeSet<String> {
@@ -320,14 +312,18 @@ fn required_properties(tool: &CachedTool) -> BTreeSet<String> {
 fn render_tool_help(tool: &CachedTool) -> String {
     let properties = tool_properties(tool);
     let required = required_properties(tool);
-    let parameters = properties
+    let mut parameters = properties
         .into_iter()
-        .map(|(name, schema)| ToolParameterHelp {
+        .flat_map(|properties| properties.iter().enumerate())
+        .map(|(position, (name, schema))| ToolParameterHelp {
             name: name.to_owned(),
             value_hint: parameter_value_hint(schema),
             description: parameter_description(schema, required.contains(name)),
+            required: required.contains(name),
+            position,
         })
         .collect::<Vec<_>>();
+    parameters.sort_by_key(|parameter| (!parameter.required, parameter.position));
     let width = parameters
         .iter()
         .map(|parameter| {
@@ -448,6 +444,8 @@ struct ToolParameterHelp {
     name: String,
     value_hint: String,
     description: String,
+    required: bool,
+    position: usize,
 }
 
 #[cfg(test)]
@@ -566,6 +564,20 @@ mod tests {
         assert!(help.contains("--issueID <STRING>"));
         assert!(help.contains("--members <STRING>..."));
         assert!(help.contains("[required]"));
+        assert!(
+            help.find("--issueID <STRING>").expect("issueID help line")
+                < help.find("--members <STRING>...").expect("members help line")
+        );
+        assert!(
+            help.find("--members <STRING>...").expect("members help line")
+                < help.find("--hours <NUMBER>").expect("hours help line")
+        );
+        assert!(
+            help.find("--hours <NUMBER>").expect("hours help line")
+                < help
+                    .find("--includeClosed <BOOLEAN>")
+                    .expect("includeClosed help line")
+        );
     }
 
     #[test]
