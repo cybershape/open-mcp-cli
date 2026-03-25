@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser};
@@ -7,9 +8,9 @@ use crate::Cli;
 use super::{
     CLI_ABOUT, command_requires_config_url, command_requires_daemon_ready,
     command_requires_runtime_checks, command_socket_override, command_version,
-    find_commands_section_bounds, format_clap_error, format_commands_section,
-    missing_url_error, parse_command_line, parse_node_major_version, parse_url,
-    render_root_help_with_tools, resolve_config_path, should_print_help,
+    find_commands_section_bounds, format_clap_error, format_commands_section, missing_url_error,
+    parse_command_line, parse_node_major_version, parse_url, render_root_help_with_tools,
+    resolve_config_path, rewrite_help_command_for_tool, should_print_help,
     should_render_root_help_for_args, truncate_tool_description,
 };
 
@@ -259,6 +260,86 @@ fn hides_daemon_subcommand_from_help() {
 fn prints_help_only_when_no_arguments_are_provided() {
     assert!(should_print_help(1));
     assert!(!should_print_help(2));
+}
+
+#[test]
+fn rewrites_help_subcommand_for_tool_help() {
+    let rewritten = rewrite_help_command_for_tool(&[
+        OsString::from("omc"),
+        OsString::from("help"),
+        OsString::from("sample_tool"),
+    ]);
+
+    assert_eq!(
+        rewritten,
+        vec![
+            OsString::from("omc"),
+            OsString::from("sample_tool"),
+            OsString::from("--help"),
+        ]
+    );
+
+    let cli = Cli::try_parse_from(rewritten).expect("expected rewritten tool help to parse");
+    match cli.command {
+        Some(crate::Commands::Tool(args)) => {
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0].to_string_lossy(), "sample_tool");
+            assert_eq!(args[1].to_string_lossy(), "--help");
+        }
+        other => panic!("expected external tool command, got {other:?}"),
+    }
+}
+
+#[test]
+fn rewrites_help_subcommand_for_tool_help_after_global_options() {
+    let rewritten = rewrite_help_command_for_tool(&[
+        OsString::from("omc"),
+        OsString::from("--config"),
+        OsString::from("/tmp/config.toml"),
+        OsString::from("--url=https://example.com"),
+        OsString::from("help"),
+        OsString::from("sample_tool"),
+    ]);
+
+    assert_eq!(
+        rewritten,
+        vec![
+            OsString::from("omc"),
+            OsString::from("--config"),
+            OsString::from("/tmp/config.toml"),
+            OsString::from("--url=https://example.com"),
+            OsString::from("sample_tool"),
+            OsString::from("--help"),
+        ]
+    );
+}
+
+#[test]
+fn does_not_rewrite_help_subcommand_for_builtin_commands() {
+    assert_eq!(
+        rewrite_help_command_for_tool(&[
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("config"),
+        ]),
+        vec![
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("config"),
+        ]
+    );
+    assert_eq!(
+        rewrite_help_command_for_tool(&[
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("daemon"),
+        ]),
+        vec![
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("daemon"),
+        ]
+    );
 }
 
 #[test]

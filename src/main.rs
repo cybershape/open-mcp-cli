@@ -98,13 +98,14 @@ struct StoredConfig {
 
 #[tokio::main]
 async fn main() {
-    let args = env::args_os().collect::<Vec<_>>();
+    let original_args = env::args_os().collect::<Vec<_>>();
+    let args = rewrite_help_command_for_tool(&original_args);
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => match error.kind() {
             ErrorKind::DisplayHelp => {
-                if should_render_root_help_for_args(args.iter().skip(1)) {
-                    let help_cache_url = help_cache_url_for_args(&args);
+                if should_render_root_help_for_args(original_args.iter().skip(1)) {
+                    let help_cache_url = help_cache_url_for_args(&original_args);
                     print!(
                         "{}",
                         render_root_help_with_tools(None, help_cache_url.as_deref())
@@ -129,6 +130,58 @@ async fn main() {
         eprintln!("fatal error: {error}");
         process::exit(1);
     }
+}
+
+fn rewrite_help_command_for_tool(args: &[OsString]) -> Vec<OsString> {
+    let Some((help_index, target_index)) = help_tool_rewrite_indices(args) else {
+        return args.to_vec();
+    };
+
+    let mut rewritten = Vec::with_capacity(args.len());
+    rewritten.extend_from_slice(&args[..help_index]);
+    rewritten.push(args[target_index].clone());
+    rewritten.extend_from_slice(&args[target_index + 1..]);
+    rewritten.push(OsString::from("--help"));
+    rewritten
+}
+
+fn help_tool_rewrite_indices(args: &[OsString]) -> Option<(usize, usize)> {
+    let mut index = 1;
+
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+
+        if arg == "--config" || arg == "--url" {
+            if index + 1 >= args.len() {
+                return None;
+            }
+            index += 2;
+            continue;
+        }
+
+        if arg.starts_with("--config=") || arg.starts_with("--url=") {
+            index += 1;
+            continue;
+        }
+
+        if arg != "help" {
+            return None;
+        }
+
+        let target_index = index + 1;
+        let target = args.get(target_index)?.to_string_lossy();
+        if target.starts_with('-') || is_builtin_help_target(&target) {
+            return None;
+        }
+
+        return Some((index, target_index));
+    }
+
+    None
+}
+
+fn is_builtin_help_target(target: &str) -> bool {
+    matches!(target, "config" | "daemon" | "help")
 }
 
 fn should_print_help(arg_count: usize) -> bool {

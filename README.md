@@ -92,6 +92,7 @@ Show parameter help for a cached MCP tool:
 
 ```bash
 omc get_issue_details --help
+omc help get_issue_details
 ```
 
 Start the hidden daemon in the background:
