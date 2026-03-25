@@ -4,7 +4,7 @@ set -euo pipefail
 
 readonly REPOSITORY="${REPOSITORY:-tiejunhu/ones-mcp-cli}"
 readonly BINARY_NAME="omc"
-readonly API_BASE="https://api.github.com/repos/${REPOSITORY}"
+readonly RELEASES_BASE="https://github.com/${REPOSITORY}/releases"
 
 log() {
   printf '%s\n' "$*"
@@ -17,41 +17,6 @@ fatal() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "missing required command: $1"
-}
-
-fetch_text() {
-  local url="$1"
-  local response
-
-  if command -v curl >/dev/null 2>&1; then
-    if response="$(
-      curl -fsSL \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: ${BINARY_NAME}-install-script" \
-        "$url" 2>&1
-    )"; then
-      printf '%s' "$response"
-      return
-    fi
-
-    fatal "failed to fetch ${url}: ${response}"
-  fi
-
-  if command -v wget >/dev/null 2>&1; then
-    if response="$(
-      wget -qO- \
-        --header="Accept: application/vnd.github+json" \
-        --header="User-Agent: ${BINARY_NAME}-install-script" \
-        "$url" 2>&1
-    )"; then
-      printf '%s' "$response"
-      return
-    fi
-
-    fatal "failed to fetch ${url}: ${response}"
-  fi
-
-  fatal "install requires curl or wget"
 }
 
 download_file() {
@@ -92,14 +57,14 @@ normalize_version() {
   printf 'v%s\n' "$version"
 }
 
-release_url() {
-  local version="${1:-}"
-  if [[ -n "$version" ]]; then
-    printf '%s/releases/tags/%s\n' "$API_BASE" "$version"
-    return
-  fi
+latest_release_url() {
+  printf '%s/latest\n' "$RELEASES_BASE"
+}
 
-  printf '%s/releases/latest\n' "$API_BASE"
+release_asset_url() {
+  local version="$1"
+  local asset_name="$2"
+  printf '%s/download/%s/%s\n' "$RELEASES_BASE" "$version" "$asset_name"
 }
 
 detect_target() {
@@ -136,53 +101,34 @@ detect_target() {
   printf '%s-%s\n' "$arch" "$os"
 }
 
-compact_json() {
-  tr -d '\n'
-}
+resolve_latest_version() {
+  local url
+  local final_url
+  local response
 
-json_value() {
-  local json="$1"
-  local key="$2"
-  local regex
+  url="$(latest_release_url)"
 
-  regex="\"${key}\":\"([^\"]+)\""
-  if [[ "$json" =~ $regex ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-  fi
-}
-
-asset_value() {
-  local json="$1"
-  local asset_name="$2"
-  local key="$3"
-  local suffix
-  local regex
-
-  suffix="${json#*\"name\":\"${asset_name}\"}"
-  if [[ "$suffix" == "$json" ]]; then
-    return
-  fi
-
-  regex="\"${key}\":\"([^\"]+)\""
-  if [[ "$suffix" =~ $regex ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-  fi
-}
-
-sha256_file() {
-  local file="$1"
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" | awk '{ print $1 }'
-    return
+  if command -v curl >/dev/null 2>&1; then
+    if final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$url" 2>&1)"; then
+      :
+    else
+      fatal "failed to resolve latest release from ${url}: ${final_url}"
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if response="$(wget -S --spider --max-redirect=20 "$url" 2>&1)"; then
+      final_url="$(printf '%s\n' "$response" | awk '/^Location: / { print $2 }' | tail -n 1)"
+      final_url="${final_url%$'\r'}"
+      final_url="${final_url% \[following\]}"
+      [[ -n "$final_url" ]] || fatal "failed to resolve latest release from ${url}: missing redirect target"
+    else
+      fatal "failed to resolve latest release from ${url}: ${response}"
+    fi
+  else
+    fatal "install requires curl or wget"
   fi
 
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$file" | awk '{ print $1 }'
-    return
-  fi
-
-  return 1
+  [[ "$final_url" == "${RELEASES_BASE}/tag/"* ]] || fatal "failed to resolve release tag from ${url}: ${final_url}"
+  printf '%s\n' "${final_url##*/}"
 }
 
 default_install_dir() {
@@ -261,24 +207,19 @@ main() {
     fatal "install directory is not writable: $install_dir; rerun with sudo or set INSTALL_DIR"
   fi
 
-  local release_json
-  release_json="$(fetch_text "$(release_url "$version")")"
-  release_json="$(printf '%s' "$release_json" | compact_json)"
-
   local release_tag
-  release_tag="$(json_value "$release_json" "tag_name")"
+  if [[ -n "$version" ]]; then
+    release_tag="$version"
+  else
+    release_tag="$(resolve_latest_version)"
+  fi
   [[ -n "$release_tag" ]] || fatal "failed to resolve release tag"
 
   local asset_name
   asset_name="${BINARY_NAME}-${release_tag}-${target}.tar.gz"
 
   local download_url
-  download_url="$(asset_value "$release_json" "$asset_name" "browser_download_url")"
-  [[ -n "$download_url" ]] || fatal "no release asset found for target ${target}"
-
-  local expected_digest
-  expected_digest="$(asset_value "$release_json" "$asset_name" "digest")"
-  expected_digest="${expected_digest#sha256:}"
+  download_url="$(release_asset_url "$release_tag" "$asset_name")"
 
   temp_dir="$(mktemp -d)"
   trap 'rm -rf -- "$temp_dir"' EXIT
@@ -288,15 +229,6 @@ main() {
 
   log "Downloading ${asset_name}"
   download_file "$download_url" "$archive_path"
-
-  if [[ -n "$expected_digest" ]]; then
-    local actual_digest
-    if actual_digest="$(sha256_file "$archive_path")"; then
-      [[ "$actual_digest" == "$expected_digest" ]] || fatal "checksum mismatch for ${asset_name}"
-    else
-      log "Skipping checksum verification because no SHA-256 tool is available"
-    fi
-  fi
 
   tar -xzf "$archive_path" -C "$temp_dir"
 

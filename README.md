@@ -7,8 +7,10 @@ Minimal CLI for ONES MCP related operations.
 Install the latest release for the current platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | bash
 ```
+
+The installer resolves the latest version through the GitHub Releases redirect path instead of the GitHub REST API, which avoids unauthenticated `api.github.com` rate limits.
 
 By default the installer writes `omc` to `/opt/homebrew/bin` when that directory exists and is writable, then falls back to `/usr/local/bin`, and finally to `~/.local/bin`.
 
@@ -17,13 +19,13 @@ If the final install directory is not already in `PATH`, the installer prints a 
 Install to a custom location instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/main/install.sh | INSTALL_DIR=/tmp/omc/bin bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | INSTALL_DIR=/tmp/omc/bin bash
 ```
 
 Install a specific released version instead of the latest one:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/main/install.sh | VERSION=v0.0.2 bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | VERSION=v0.0.2 bash
 ```
 
 ## Requirements
@@ -160,7 +162,7 @@ Pushing a `v*` tag triggers the GitHub Actions release workflow, which builds re
 
 This repository does not publish a Homebrew formula.
 
-The repository includes `install.sh`, which downloads the latest compatible release archive from GitHub Releases, verifies its SHA-256 digest when a checksum tool is available, and installs the `omc` binary.
+The repository includes `install.sh`, which resolves the latest compatible release through GitHub Releases redirects, downloads the matching archive, and installs the `omc` binary.
 
 ## Daemon
 
