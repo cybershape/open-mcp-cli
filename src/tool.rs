@@ -318,7 +318,7 @@ fn render_tool_help(tool: &CachedTool) -> String {
         .map(|(position, (name, schema))| ToolParameterHelp {
             name: name.to_owned(),
             value_hint: parameter_value_hint(schema),
-            description: parameter_description(schema, required.contains(name)),
+            description_lines: parameter_description_lines(schema, required.contains(name)),
             required: required.contains(name),
             position,
         })
@@ -354,12 +354,19 @@ fn render_tool_help(tool: &CachedTool) -> String {
         output.push_str("\nParameters:\n");
         for parameter in parameters {
             let label = format!("--{} {}", parameter.name, parameter.value_hint);
+            let mut description_lines = parameter.description_lines.into_iter();
+            let first_line = description_lines
+                .next()
+                .unwrap_or_else(|| "No description.".to_owned());
             output.push_str(&format!(
                 "  {:width$}  {}\n",
                 label,
-                parameter.description,
+                first_line,
                 width = width
             ));
+            for line in description_lines {
+                output.push_str(&format!("  {:width$}  {}\n", "", line, width = width));
+            }
         }
     }
 
@@ -408,7 +415,7 @@ fn scalar_value_hint(schema: &Value) -> &'static str {
     }
 }
 
-fn parameter_description(schema: &Value, required: bool) -> String {
+fn parameter_description_lines(schema: &Value, required: bool) -> Vec<String> {
     let mut description = schema
         .get("description")
         .and_then(Value::as_str)
@@ -429,7 +436,166 @@ fn parameter_description(schema: &Value, required: bool) -> String {
         }
     }
 
-    description
+    let mut lines = vec![description];
+    if let Some(extension_lines) = parameter_description_extension_lines(schema) {
+        lines.extend(extension_lines);
+    }
+    lines
+}
+
+fn parameter_description_extension_lines(schema: &Value) -> Option<Vec<String>> {
+    if let Some(array_schema) = first_schema_of_type(schema, "array") {
+        let item_schema = array_schema.get("items")?;
+        let summary = summarize_object_schema(item_schema)?;
+        let mut lines = vec![
+            "Repeat this parameter with one JSON object per occurrence.".to_owned(),
+            format!("Item object shape: {}", summary.shape),
+        ];
+        if let Some(required_keys) = summary.required_keys_line() {
+            lines.push(required_keys);
+        }
+        lines.extend(summary.property_note_lines());
+        return Some(lines);
+    }
+
+    let summary = summarize_object_schema(schema)?;
+    let mut lines = vec![format!("JSON object shape: {}", summary.shape)];
+    if let Some(required_keys) = summary.required_keys_line() {
+        lines.push(required_keys);
+    }
+    lines.extend(summary.property_note_lines());
+    Some(lines)
+}
+
+fn summarize_object_schema(schema: &Value) -> Option<ObjectSchemaSummary> {
+    let object_schema = first_schema_of_type(schema, "object")?;
+    let properties = object_schema.get("properties").and_then(Value::as_object)?;
+    if properties.is_empty() {
+        return None;
+    }
+
+    let required = object_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let shape_fields = properties
+        .iter()
+        .map(|(name, property_schema)| {
+            let optional_suffix = if required.iter().any(|item| item == name) {
+                ""
+            } else {
+                "?"
+            };
+            format!(
+                "{name}{optional_suffix}: {}",
+                schema_value_placeholder(property_schema)
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let property_notes = properties
+        .iter()
+        .filter_map(|(name, property_schema)| {
+            property_schema
+                .get("description")
+                .and_then(Value::as_str)
+                .map(normalize_description)
+                .filter(|description| !description.is_empty())
+                .map(|description| format!("{name}: {description}"))
+        })
+        .collect::<Vec<_>>();
+
+    Some(ObjectSchemaSummary {
+        shape: format!("{{ {} }}.", shape_fields.join(", ")),
+        required,
+        property_notes,
+    })
+}
+
+fn schema_value_placeholder(schema: &Value) -> String {
+    let placeholders = schema_value_placeholders(schema);
+    if placeholders.is_empty() {
+        "VALUE".to_owned()
+    } else {
+        placeholders.join(" | ")
+    }
+}
+
+fn schema_value_placeholders(schema: &Value) -> Vec<String> {
+    if let Some(candidates) = schema_variants(schema) {
+        let mut placeholders = Vec::new();
+        for candidate in candidates {
+            for placeholder in schema_value_placeholders(candidate) {
+                if !placeholders.contains(&placeholder) {
+                    placeholders.push(placeholder);
+                }
+            }
+        }
+        return placeholders;
+    }
+
+    match candidate_type(schema) {
+        Some("string") => vec!["\"STRING\"".to_owned()],
+        Some("integer") => vec!["123".to_owned()],
+        Some("number") => vec!["1.23".to_owned()],
+        Some("boolean") => vec!["true".to_owned()],
+        Some("object") => vec!["{...}".to_owned()],
+        Some("array") => {
+            let item_placeholder = schema
+                .get("items")
+                .map(schema_value_placeholder)
+                .unwrap_or_else(|| "VALUE".to_owned());
+            vec![format!("[{item_placeholder}]")]
+        }
+        Some("null") => vec!["null".to_owned()],
+        Some(_) | None => vec!["VALUE".to_owned()],
+    }
+}
+
+fn schema_variants(schema: &Value) -> Option<Vec<&Value>> {
+    schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)
+        .map(|candidates| candidates.iter().collect())
+}
+
+fn first_schema_of_type<'a>(schema: &'a Value, expected_type: &str) -> Option<&'a Value> {
+    if candidate_type(schema) == Some(expected_type) {
+        return Some(schema);
+    }
+
+    schema_variants(schema)?
+        .into_iter()
+        .find(|candidate| first_schema_of_type(candidate, expected_type).is_some())
+        .and_then(|candidate| first_schema_of_type(candidate, expected_type))
+}
+
+struct ObjectSchemaSummary {
+    shape: String,
+    required: Vec<String>,
+    property_notes: Vec<String>,
+}
+
+impl ObjectSchemaSummary {
+    fn required_keys_line(&self) -> Option<String> {
+        (!self.required.is_empty()).then(|| format!("Required keys: {}.", self.required.join(", ")))
+    }
+
+    fn property_note_lines(&self) -> Vec<String> {
+        self.property_notes
+            .iter()
+            .map(|note| format!("  {note}"))
+            .collect()
+    }
 }
 
 fn normalize_description(description: &str) -> String {
@@ -443,7 +609,7 @@ fn display_tool_result<'a>(result: &'a Value) -> &'a Value {
 struct ToolParameterHelp {
     name: String,
     value_hint: String,
-    description: String,
+    description_lines: Vec<String>,
     required: bool,
     position: usize,
 }
@@ -455,8 +621,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CachedTool, display_tool_result, parameter_value_hint, parse_tool_arguments,
-        render_tool_help,
+        CachedTool, display_tool_result, parameter_value_hint, parse_tool_arguments, render_tool_help,
     };
 
     fn sample_tool() -> CachedTool {
@@ -496,6 +661,46 @@ mod tests {
             input_schema: json!({
                 "type": "object",
                 "properties": {}
+            }),
+        }
+    }
+
+    fn object_array_parameter_tool() -> CachedTool {
+        CachedTool {
+            name: "update_testcase".to_owned(),
+            description: Some("Update a test case.".to_owned()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "fieldValues": {
+                        "type": "array",
+                        "description": "Updated custom field values keyed by field alias.",
+                        "items": {
+                            "type": "object",
+                            "required": ["alias"],
+                            "properties": {
+                                "alias": {
+                                    "type": "string",
+                                    "description": "Field alias. Retrieved from get_testcase_library_fields tool."
+                                },
+                                "dateValue": {
+                                    "anyOf": [
+                                        { "type": "string" },
+                                        { "type": "null" }
+                                    ],
+                                    "description": "Optional date value in YYYY-MM-DD format for date fields."
+                                },
+                                "value": {
+                                    "anyOf": [
+                                        {},
+                                        { "type": "null" }
+                                    ],
+                                    "description": "Field value."
+                                }
+                            }
+                        }
+                    }
+                }
             }),
         }
     }
@@ -598,6 +803,31 @@ mod tests {
             })),
             "<STRING>..."
         );
+    }
+
+    #[test]
+    fn renders_object_shape_details_for_array_object_parameters() {
+        let help = render_tool_help(&object_array_parameter_tool());
+
+        assert!(help.contains(
+            "--fieldValues <JSON>...  Updated custom field values keyed by field alias.\n"
+        ));
+        assert!(help.contains(
+            "                        Repeat this parameter with one JSON object per occurrence.\n"
+        ));
+        assert!(help.contains(
+            "                        Item object shape: { alias: \"STRING\", dateValue?: \"STRING\" | null, value?: VALUE | null }.\n"
+        ));
+        assert!(help.contains("                        Required keys: alias.\n"));
+        assert!(help.contains(
+            "                          alias: Field alias. Retrieved from get_testcase_library_fields tool.\n"
+        ));
+        assert!(help.contains(
+            "                          dateValue: Optional date value in YYYY-MM-DD format for date fields.\n"
+        ));
+        assert!(help.contains(
+            "                          value: Field value.\n"
+        ));
     }
 
     #[test]

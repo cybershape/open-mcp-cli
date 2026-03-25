@@ -97,6 +97,8 @@ omc help get_issue_details
 
 Required parameters are listed first in tool help output. Remaining parameters follow the order defined in the tool input schema.
 
+For object-style parameters, `omc <tool> --help` includes a synthesized object shape summary, required keys, and nested key notes so the expected JSON is still readable even when a consumer does not fully interpret JSON Schema.
+
 Start the hidden daemon in the background:
 
 ```bash
