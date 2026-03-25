@@ -124,4 +124,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" dist/*/*.tar.gz --generate-notes
+          gh release create "${GITHUB_REF_NAME}" dist/*/*.tar.gz --generate-notes --repo "${GITHUB_REPOSITORY}"
