@@ -195,6 +195,6 @@ After startup, the daemon uses the same upstream stdio MCP session to complete t
 
 If that MCP tool cache file for the current host is missing when `daemon run` checks startup state, the command waits until the daemon generates it before returning.
 
-If multiple downstream commands arrive at the same time, the daemon queues them and sends them to the upstream stdio session one at a time. The next command is only sent after the previous request has received its response.
+If multiple downstream commands arrive at the same time, the daemon keeps all of those local MCP sessions open, forwards their requests over the shared upstream stdio session concurrently, rewrites request IDs to avoid collisions, and routes each response back to the originating client by request ID.
 
 The daemon refreshes that tool cache every 30 minutes. If the refreshed tool list is unchanged, the cache file is left untouched. If the tool list changes, the cache file is rewritten with the new content.

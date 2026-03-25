@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -14,11 +14,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::signal;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, sleep};
 
 use crate::CLI_COMMAND_NAME;
@@ -82,19 +81,20 @@ pub(crate) struct CachedTool {
 }
 
 #[derive(Debug)]
-struct DownstreamConnection {
-    reader: BufReader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
+struct ClientRequestRoute {
+    client_id: u64,
+    original_id: Value,
 }
 
-impl DownstreamConnection {
-    fn new(stream: UnixStream) -> Self {
-        let (reader, writer) = stream.into_split();
-        Self {
-            reader: BufReader::new(reader),
-            writer,
-        }
-    }
+#[derive(Debug)]
+struct DownstreamClient {
+    sender: mpsc::UnboundedSender<Value>,
+}
+
+#[derive(Debug)]
+enum DownstreamEvent {
+    Message { client_id: u64, message: Value },
+    Closed { client_id: u64 },
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,12 +108,6 @@ struct ListToolsResult {
 struct PendingToolRefresh {
     request_id: Value,
     tools: Vec<Value>,
-}
-
-#[derive(Debug)]
-enum InFlightRequest {
-    Client { id: Value },
-    Refresh(PendingToolRefresh),
 }
 
 pub(crate) async fn run_daemon(
@@ -804,98 +798,182 @@ async fn run_control_server(
     }
 }
 
-async fn handle_connection(
+async fn handle_connection<R, W>(
     listener: UnixListener,
-    upstream_reader: &mut BufReader<tokio::process::ChildStdout>,
-    upstream_writer: &mut tokio::process::ChildStdin,
+    upstream_reader: &mut BufReader<R>,
+    upstream_writer: &mut W,
     initialize_result: Value,
     url: &str,
     tool_cache_path: &Path,
     mut daemon_request_counter: u64,
     mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<(), Box<dyn Error>> {
-    let mut downstream = None;
+) -> Result<(), Box<dyn Error>>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut refresh_interval = interval(TOOL_CACHE_REFRESH_INTERVAL);
-    let mut pending_client_messages = VecDeque::new();
-    let mut inflight_request = None;
+    let (downstream_event_tx, mut downstream_event_rx) = mpsc::unbounded_channel();
+    let mut downstream_clients = HashMap::<u64, DownstreamClient>::new();
+    let mut client_request_routes = HashMap::<String, ClientRequestRoute>::new();
+    let mut next_client_id = 0_u64;
+    let mut pending_refresh = None;
     let mut refresh_requested = false;
     refresh_interval.tick().await;
 
     loop {
         tokio::select! {
-            result = listener.accept(), if downstream.is_none() => {
+            result = listener.accept() => {
                 let (stream, _) = result?;
-                downstream = Some(DownstreamConnection::new(stream));
+                let client_id = next_client_id;
+                next_client_id += 1;
+                let (response_tx, response_rx) = mpsc::unbounded_channel();
+                downstream_clients.insert(client_id, DownstreamClient { sender: response_tx });
+                tokio::spawn(run_downstream_client(
+                    client_id,
+                    stream,
+                    initialize_result.clone(),
+                    downstream_event_tx.clone(),
+                    response_rx,
+                ));
             }
             result = read_upstream_message(upstream_reader) => {
                 match result? {
                     Some(message) => {
-                        if handle_inflight_response(
+                        if handle_refresh_response(
                             &message,
                             url,
                             tool_cache_path,
                             upstream_writer,
-                            &mut inflight_request,
-                            &mut pending_client_messages,
+                            &mut pending_refresh,
                             &mut refresh_requested,
                             &mut daemon_request_counter,
                         )
                         .await? {
-                        } else if let Some(connection) = downstream.as_mut() {
-                            write_downstream_message(&mut connection.writer, &message).await?;
                         } else {
-                            eprintln!("dropping upstream message before a client connects");
+                            route_upstream_response(
+                                &message,
+                                &mut downstream_clients,
+                                &mut client_request_routes,
+                            )?;
                         }
                     }
                     None => return Ok(()),
                 }
             }
-            result = read_downstream_message(&mut downstream), if downstream.is_some() => {
-                match result? {
-                    Some(message) => {
-                        if is_initialize_request(&message) {
-                            write_jsonrpc_result(
-                                &mut downstream
-                                    .as_mut()
-                                    .ok_or("downstream connection disappeared")?
-                                    .writer,
-                                message_id(&message)
-                                    .cloned()
-                                    .ok_or("initialize request is missing an id")?,
-                                initialize_result.clone(),
-                            )
-                            .await?;
-                        } else if is_initialized_notification(&message) {
-                        } else {
-                            pending_client_messages.push_back(message);
-                            dispatch_pending_upstream(
-                                upstream_writer,
-                                &mut pending_client_messages,
-                                &mut inflight_request,
-                                &mut refresh_requested,
-                                &mut daemon_request_counter,
-                            )
-                            .await?;
-                        }
+            event = downstream_event_rx.recv() => {
+                match event {
+                    Some(DownstreamEvent::Message { client_id, message }) => {
+                        forward_downstream_message(
+                            client_id,
+                            message,
+                            upstream_writer,
+                            &mut client_request_routes,
+                            &mut daemon_request_counter,
+                        )
+                        .await?;
+                    }
+                    Some(DownstreamEvent::Closed { client_id }) => {
+                        remove_downstream_client(
+                            client_id,
+                            &mut downstream_clients,
+                            &mut client_request_routes,
+                        );
                     }
                     None => return Ok(()),
                 }
             }
             _ = refresh_interval.tick() => {
-                refresh_requested = true;
-                dispatch_pending_upstream(
-                    upstream_writer,
-                    &mut pending_client_messages,
-                    &mut inflight_request,
-                    &mut refresh_requested,
-                    &mut daemon_request_counter,
-                )
-                .await?;
+                if pending_refresh.is_some() {
+                    refresh_requested = true;
+                } else {
+                    start_tool_refresh(
+                        upstream_writer,
+                        &mut pending_refresh,
+                        &mut refresh_requested,
+                        &mut daemon_request_counter,
+                    )
+                    .await?;
+                }
             }
             result = shutdown_rx.changed() => {
                 result.map_err(|error| format!("failed to observe daemon shutdown: {error}"))?;
                 if *shutdown_rx.borrow() {
                     return Ok(());
+                }
+            }
+        }
+    }
+}
+
+async fn run_downstream_client(
+    client_id: u64,
+    stream: UnixStream,
+    initialize_result: Value,
+    event_tx: mpsc::UnboundedSender<DownstreamEvent>,
+    mut response_rx: mpsc::UnboundedReceiver<Value>,
+) {
+    if let Err(error) = run_downstream_client_inner(
+        client_id,
+        stream,
+        initialize_result,
+        &event_tx,
+        &mut response_rx,
+    )
+    .await
+    {
+        eprintln!("downstream client {client_id} failed: {error}");
+    }
+
+    let _ = event_tx.send(DownstreamEvent::Closed { client_id });
+}
+
+async fn run_downstream_client_inner(
+    client_id: u64,
+    stream: UnixStream,
+    initialize_result: Value,
+    event_tx: &mpsc::UnboundedSender<DownstreamEvent>,
+    response_rx: &mut mpsc::UnboundedReceiver<Value>,
+) -> Result<(), String> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    loop {
+        tokio::select! {
+            result = async {
+                read_downstream_message_frame(&mut reader)
+                    .await
+                    .map_err(|error| error.to_string())
+            } => {
+                let message = match result {
+                    Ok(Some(message)) => message,
+                    Ok(None) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+
+                if is_initialize_request(&message) {
+                    let initialize_id = message_id(&message)
+                        .cloned()
+                        .ok_or("initialize request is missing an id".to_owned())?;
+                    write_jsonrpc_result(&mut writer, initialize_id, initialize_result.clone())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                } else if is_initialized_notification(&message) {
+                } else if event_tx
+                    .send(DownstreamEvent::Message { client_id, message })
+                    .is_err()
+                {
+                    return Ok(());
+                }
+            }
+            response = response_rx.recv() => {
+                match response {
+                    Some(message) => {
+                        write_downstream_message(&mut writer, &message)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                    None => return Ok(()),
                 }
             }
         }
@@ -1085,84 +1163,68 @@ async fn refresh_tool_cache_once(
     Ok(())
 }
 
-async fn handle_inflight_response(
+async fn handle_refresh_response<W>(
     message: &Value,
     url: &str,
     cache_path: &Path,
-    writer: &mut tokio::process::ChildStdin,
-    inflight_request: &mut Option<InFlightRequest>,
-    pending_client_messages: &mut VecDeque<Value>,
+    writer: &mut W,
+    pending_refresh: &mut Option<PendingToolRefresh>,
     refresh_requested: &mut bool,
     daemon_request_counter: &mut u64,
-) -> Result<bool, Box<dyn Error>> {
-    let Some(current_request) = inflight_request.take() else {
+) -> Result<bool, Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(refresh) = pending_refresh.take() else {
         return Ok(false);
     };
 
-    match current_request {
-        InFlightRequest::Client { id } => {
-            if message_id(message) != Some(&id) {
-                *inflight_request = Some(InFlightRequest::Client { id });
-                return Ok(false);
-            }
-
-            dispatch_pending_upstream(
-                writer,
-                pending_client_messages,
-                inflight_request,
-                refresh_requested,
-                daemon_request_counter,
-            )
-            .await?;
-            Ok(false)
-        }
-        InFlightRequest::Refresh(refresh) => {
-            if message_id(message) != Some(&refresh.request_id) {
-                *inflight_request = Some(InFlightRequest::Refresh(refresh));
-                return Ok(false);
-            }
-
-            handle_pending_refresh_response(
-                message,
-                url,
-                cache_path,
-                writer,
-                refresh,
-                inflight_request,
-                pending_client_messages,
-                refresh_requested,
-                daemon_request_counter,
-            )
-            .await?;
-            Ok(true)
-        }
+    if message_id(message) != Some(&refresh.request_id) {
+        *pending_refresh = Some(refresh);
+        return Ok(false);
     }
+
+    handle_pending_refresh_response(
+        message,
+        url,
+        cache_path,
+        writer,
+        refresh,
+        pending_refresh,
+        refresh_requested,
+        daemon_request_counter,
+    )
+    .await?;
+    Ok(true)
 }
 
-async fn handle_pending_refresh_response(
+async fn handle_pending_refresh_response<W>(
     message: &Value,
     url: &str,
     cache_path: &Path,
-    writer: &mut tokio::process::ChildStdin,
+    writer: &mut W,
     refresh: PendingToolRefresh,
-    inflight_request: &mut Option<InFlightRequest>,
-    pending_client_messages: &mut VecDeque<Value>,
+    pending_refresh: &mut Option<PendingToolRefresh>,
     refresh_requested: &mut bool,
     daemon_request_counter: &mut u64,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin,
+{
     let mut refresh = refresh;
     let page = match parse_list_tools_result(message) {
         Ok(page) => page,
         Err(error) => {
             eprintln!("failed to refresh tools from {url}: {error}");
-            dispatch_pending_upstream(
-                writer,
-                pending_client_messages,
-                inflight_request,
-                refresh_requested,
-                daemon_request_counter,
-            )
-            .await?;
+            if *refresh_requested {
+                start_tool_refresh(
+                    writer,
+                    pending_refresh,
+                    refresh_requested,
+                    daemon_request_counter,
+                )
+                .await?;
+            }
             return Ok(());
         }
     };
@@ -1172,55 +1234,118 @@ async fn handle_pending_refresh_response(
         let request_id = next_daemon_request_id(daemon_request_counter);
         send_tools_list_request(writer, &request_id, Some(&cursor)).await?;
         refresh.request_id = request_id;
-        *inflight_request = Some(InFlightRequest::Refresh(refresh));
+        *pending_refresh = Some(refresh);
         return Ok(());
     }
 
     update_tool_cache(url, cache_path, refresh.tools)?;
-    dispatch_pending_upstream(
-        writer,
-        pending_client_messages,
-        inflight_request,
-        refresh_requested,
-        daemon_request_counter,
-    )
-    .await
+    if *refresh_requested {
+        start_tool_refresh(
+            writer,
+            pending_refresh,
+            refresh_requested,
+            daemon_request_counter,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
-async fn dispatch_pending_upstream(
-    writer: &mut tokio::process::ChildStdin,
-    pending_client_messages: &mut VecDeque<Value>,
-    inflight_request: &mut Option<InFlightRequest>,
+async fn start_tool_refresh<W>(
+    writer: &mut W,
+    pending_refresh: &mut Option<PendingToolRefresh>,
     refresh_requested: &mut bool,
     daemon_request_counter: &mut u64,
-) -> Result<(), Box<dyn Error>> {
-    if inflight_request.is_some() {
-        return Ok(());
-    }
+) -> Result<(), Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin,
+{
+    let request_id = next_daemon_request_id(daemon_request_counter);
+    send_tools_list_request(writer, &request_id, None).await?;
+    *pending_refresh = Some(PendingToolRefresh {
+        request_id,
+        tools: Vec::new(),
+    });
+    *refresh_requested = false;
+    Ok(())
+}
 
-    while let Some(message) = pending_client_messages.pop_front() {
-        let request_id = message_id(&message).cloned();
+async fn forward_downstream_message<W>(
+    client_id: u64,
+    message: Value,
+    writer: &mut W,
+    client_request_routes: &mut HashMap<String, ClientRequestRoute>,
+    daemon_request_counter: &mut u64,
+) -> Result<(), Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(original_id) = message_id(&message).cloned() else {
         write_upstream_message(writer, &message).await?;
+        return Ok(());
+    };
 
-        if let Some(id) = request_id {
-            *inflight_request = Some(InFlightRequest::Client { id });
-            return Ok(());
-        }
-    }
+    let upstream_id = next_daemon_request_id(daemon_request_counter);
+    let routed_message = replace_message_id(&message, upstream_id.clone())?;
+    write_upstream_message(writer, &routed_message).await?;
+    client_request_routes.insert(
+        request_id_key(&upstream_id)?,
+        ClientRequestRoute {
+            client_id,
+            original_id,
+        },
+    );
+    Ok(())
+}
 
-    if *refresh_requested {
-        let request_id = next_daemon_request_id(daemon_request_counter);
-        send_tools_list_request(writer, &request_id, None).await?;
-        *inflight_request = Some(InFlightRequest::Refresh(PendingToolRefresh {
-            request_id,
-            tools: Vec::new(),
-        }));
-        *refresh_requested = false;
+fn route_upstream_response(
+    message: &Value,
+    downstream_clients: &mut HashMap<u64, DownstreamClient>,
+    client_request_routes: &mut HashMap<String, ClientRequestRoute>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(response_id) = message_id(message) else {
+        eprintln!("dropping unsolicited upstream message without an id");
+        return Ok(());
+    };
+
+    let Some(route) = client_request_routes.remove(&request_id_key(response_id)?) else {
+        eprintln!("dropping upstream message with unknown request id {response_id}");
+        return Ok(());
+    };
+
+    let response = replace_message_id(message, route.original_id)?;
+    let Some(client) = downstream_clients.get(&route.client_id) else {
+        return Ok(());
+    };
+
+    if client.sender.send(response).is_err() {
+        remove_downstream_client(route.client_id, downstream_clients, client_request_routes);
     }
 
     Ok(())
 }
 
+fn remove_downstream_client(
+    client_id: u64,
+    downstream_clients: &mut HashMap<u64, DownstreamClient>,
+    client_request_routes: &mut HashMap<String, ClientRequestRoute>,
+) {
+    downstream_clients.remove(&client_id);
+    client_request_routes.retain(|_, route| route.client_id != client_id);
+}
+
+fn replace_message_id(message: &Value, id: Value) -> Result<Value, Box<dyn Error>> {
+    let mut message = message
+        .as_object()
+        .cloned()
+        .ok_or("expected a JSON-RPC object")?;
+    message.insert("id".to_owned(), id);
+    Ok(Value::Object(message))
+}
+
+fn request_id_key(id: &Value) -> Result<String, Box<dyn Error>> {
+    Ok(serde_json::to_string(id)?)
+}
 fn update_tool_cache(
     url: &str,
     cache_path: &Path,
@@ -1254,11 +1379,14 @@ fn update_tool_cache(
     Ok(())
 }
 
-async fn send_tools_list_request(
-    writer: &mut tokio::process::ChildStdin,
+async fn send_tools_list_request<W>(
+    writer: &mut W,
     request_id: &Value,
     cursor: Option<&str>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>>
+where
+    W: AsyncWrite + Unpin,
+{
     let params = match cursor {
         Some(cursor) => json!({ "cursor": cursor }),
         None => json!({}),
@@ -1419,15 +1547,6 @@ where
         }),
     )
     .await
-}
-
-async fn read_downstream_message(
-    downstream: &mut Option<DownstreamConnection>,
-) -> Result<Option<Value>, Box<dyn Error>> {
-    let connection = downstream
-        .as_mut()
-        .ok_or("downstream connection is not available")?;
-    read_downstream_message_frame(&mut connection.reader).await
 }
 
 fn message_id(message: &Value) -> Option<&Value> {
@@ -1716,14 +1835,16 @@ mod tests {
     use std::os::unix::net::UnixListener as StdUnixListener;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::io::BufReader;
+    use tokio::io::{BufReader, duplex, split};
     use tokio::net::UnixListener;
+    use tokio::sync::watch;
 
     use super::{
         ToolCache, cache_scope_key, cache_scope_path_component, call_tool, ensure_mcp_url_suffix,
-        parse_status_response, read_cached_tool_summaries, read_downstream_message_frame,
-        reset_broken_daemon_state, resolve_socket_path, sort_tool_values, tool_cache_dir,
-        urls_share_cache_scope, write_downstream_message, write_tool_cache_if_changed,
+        handle_connection, parse_status_response, read_cached_tool_summaries,
+        read_downstream_message_frame, read_upstream_message, reset_broken_daemon_state,
+        resolve_socket_path, sort_tool_values, tool_cache_dir, urls_share_cache_scope,
+        write_downstream_message, write_tool_cache_if_changed, write_upstream_message,
     };
 
     #[test]
@@ -2178,6 +2299,152 @@ mod tests {
         );
 
         server.await.expect("expected server task");
+    }
+
+    #[tokio::test]
+    async fn handle_connection_routes_concurrent_tool_calls_by_request_id() {
+        let temp_dir = unique_socket_temp_dir();
+        let socket_path = temp_dir.join("daemon.sock");
+        let tool_cache_path = temp_dir.join("tools.json");
+        let listener = UnixListener::bind(&socket_path).expect("expected socket listener");
+        let (bridge_stream, upstream_stream) = duplex(4096);
+        let (bridge_reader, mut bridge_writer) = split(bridge_stream);
+        let mut bridge_reader = BufReader::new(bridge_reader);
+        let (upstream_reader, mut upstream_writer) = split(upstream_stream);
+        let mut upstream_reader = BufReader::new(upstream_reader);
+        let initialize_result = json!({
+            "protocolVersion": super::MCP_PROTOCOL_VERSION,
+            "capabilities": {}
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let bridge = async move {
+            handle_connection(
+                listener,
+                &mut bridge_reader,
+                &mut bridge_writer,
+                initialize_result,
+                "https://example.com",
+                &tool_cache_path,
+                0,
+                shutdown_rx,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        };
+
+        let upstream = async move {
+            let first = read_upstream_message(&mut upstream_reader)
+                .await
+                .expect("expected first upstream message")
+                .expect("expected first routed message");
+            let second = read_upstream_message(&mut upstream_reader)
+                .await
+                .expect("expected second upstream message")
+                .expect("expected second routed message");
+
+            let mut calls = vec![first, second];
+            calls.sort_by_key(|message| {
+                message
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .expect("expected tool name")
+                    .to_owned()
+            });
+
+            let alpha = &calls[0];
+            let beta = &calls[1];
+            assert_eq!(
+                alpha.pointer("/params/name").and_then(Value::as_str),
+                Some("alpha_tool")
+            );
+            assert_eq!(
+                beta.pointer("/params/name").and_then(Value::as_str),
+                Some("beta_tool")
+            );
+
+            let beta_id = beta.get("id").cloned().expect("expected beta request id");
+            write_upstream_message(
+                &mut upstream_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": beta_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "beta"
+                            }
+                        ]
+                    }
+                }),
+            )
+            .await
+            .expect("expected beta response write");
+
+            let alpha_id = alpha.get("id").cloned().expect("expected alpha request id");
+            write_upstream_message(
+                &mut upstream_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": alpha_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "alpha"
+                            }
+                        ]
+                    }
+                }),
+            )
+            .await
+            .expect("expected alpha response write");
+        };
+
+        let calls = async move {
+            let alpha_call = call_tool(
+                "https://example.com",
+                Some(&socket_path),
+                "alpha_tool",
+                json!({ "issueID": "ISS-1" }),
+            );
+            let beta_call = call_tool(
+                "https://example.com",
+                Some(&socket_path),
+                "beta_tool",
+                json!({ "issueID": "ISS-2" }),
+            );
+            let (alpha_result, beta_result) = tokio::join!(alpha_call, beta_call);
+
+            assert_eq!(
+                alpha_result.expect("expected alpha result"),
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "alpha"
+                        }
+                    ]
+                })
+            );
+            assert_eq!(
+                beta_result.expect("expected beta result"),
+                json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "beta"
+                        }
+                    ]
+                })
+            );
+
+            let _ = shutdown_tx.send(true);
+        };
+
+        let (bridge_result, _, _) = tokio::join!(bridge, upstream, calls);
+        bridge_result.expect("expected bridge success");
     }
 
     #[test]

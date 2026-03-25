@@ -148,14 +148,8 @@ fn parses_hidden_daemon_foreground_subcommand() {
 
 #[test]
 fn daemon_socket_override_is_available_for_background_run() {
-    let cli = Cli::try_parse_from([
-        "omc",
-        "daemon",
-        "--socket",
-        "/tmp/ones-mcp-cli.sock",
-        "run",
-    ])
-    .expect("expected daemon run with socket");
+    let cli = Cli::try_parse_from(["omc", "daemon", "--socket", "/tmp/ones-mcp-cli.sock", "run"])
+        .expect("expected daemon run with socket");
 
     assert_eq!(
         command_socket_override(cli.command.as_ref()),
