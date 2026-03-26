@@ -27,6 +27,7 @@ const DAEMON_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TOOL_CACHE_READY_RETRIES: usize = 600;
 const TOOL_CACHE_RETRY_DELAY: Duration = Duration::from_millis(50);
 const TOOL_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const DAEMON_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TOOL_CACHE_FILE_NAME: &str = "tools.json";
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -224,6 +225,8 @@ pub(crate) fn spawn_detached_daemon(
     let tool_cache_path = tool_cache_path(url, socket_override)?;
     let startup_log_path = daemon_startup_log_path(&control_socket_path)?;
     let mut command = std::process::Command::new(executable);
+
+    remove_tool_cache_if_present(&tool_cache_path)?;
 
     if let Some(path) = config_override {
         command.arg("--config").arg(path);
@@ -500,6 +503,27 @@ fn remove_socket_file_if_present(path: &Path) -> Result<bool, Box<dyn Error>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => {
             Err(format!("failed to inspect socket path {}: {error}", path.display()).into())
+        }
+    }
+}
+
+fn remove_tool_cache_if_present(path: &Path) -> Result<bool, Box<dyn Error>> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err(format!(
+                    "tool cache path exists but is not a file: {}",
+                    path.display()
+                )
+                .into());
+            }
+
+            fs::remove_file(path)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(format!("failed to inspect tool cache {}: {error}", path.display()).into())
         }
     }
 }
@@ -846,8 +870,37 @@ async fn handle_connection<R, W>(
     initialize_result: Value,
     url: &str,
     tool_cache_path: &Path,
+    daemon_request_counter: u64,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn Error>>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    handle_connection_with_idle_timeout(
+        listener,
+        upstream_reader,
+        upstream_writer,
+        initialize_result,
+        url,
+        tool_cache_path,
+        daemon_request_counter,
+        shutdown_rx,
+        DAEMON_IDLE_TIMEOUT,
+    )
+    .await
+}
+
+async fn handle_connection_with_idle_timeout<R, W>(
+    listener: UnixListener,
+    upstream_reader: &mut BufReader<R>,
+    upstream_writer: &mut W,
+    initialize_result: Value,
+    url: &str,
+    tool_cache_path: &Path,
     mut daemon_request_counter: u64,
     mut shutdown_rx: watch::Receiver<bool>,
+    idle_timeout: Duration,
 ) -> Result<(), Box<dyn Error>>
 where
     R: AsyncRead + Unpin,
@@ -860,6 +913,8 @@ where
     let mut next_client_id = 0_u64;
     let mut pending_refresh = None;
     let mut refresh_requested = false;
+    let idle_timer = sleep(idle_timeout);
+    tokio::pin!(idle_timer);
     refresh_interval.tick().await;
 
     loop {
@@ -870,6 +925,7 @@ where
                 next_client_id += 1;
                 let (response_tx, response_rx) = mpsc::unbounded_channel();
                 downstream_clients.insert(client_id, DownstreamClient { sender: response_tx });
+                reset_idle_timer(idle_timer.as_mut(), idle_timeout);
                 tokio::spawn(run_downstream_client(
                     client_id,
                     stream,
@@ -913,6 +969,7 @@ where
                             &mut daemon_request_counter,
                         )
                         .await?;
+                        reset_idle_timer(idle_timer.as_mut(), idle_timeout);
                     }
                     Some(DownstreamEvent::Closed { client_id }) => {
                         remove_downstream_client(
@@ -920,9 +977,14 @@ where
                             &mut downstream_clients,
                             &mut client_request_routes,
                         );
+                        reset_idle_timer(idle_timer.as_mut(), idle_timeout);
                     }
                     None => return Ok(()),
                 }
+            }
+            _ = &mut idle_timer, if downstream_clients.is_empty() => {
+                eprintln!("daemon idle for {} seconds, exiting", idle_timeout.as_secs());
+                return Ok(());
             }
             _ = refresh_interval.tick() => {
                 if pending_refresh.is_some() {
@@ -945,6 +1007,10 @@ where
             }
         }
     }
+}
+
+fn reset_idle_timer(idle_timer: std::pin::Pin<&mut tokio::time::Sleep>, idle_timeout: Duration) {
+    idle_timer.reset(tokio::time::Instant::now() + idle_timeout);
 }
 
 async fn run_downstream_client(
@@ -1880,17 +1946,19 @@ mod tests {
     use std::fs;
     use std::os::unix::net::UnixListener as StdUnixListener;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{BufReader, duplex, split};
     use tokio::net::UnixListener;
     use tokio::sync::watch;
+    use tokio::time::timeout;
 
     use super::{
         ToolCache, cache_scope_key, cache_scope_path_component, call_tool, ensure_mcp_url_suffix,
-        handle_connection, parse_status_response, read_cached_tool_summaries,
-        read_downstream_message_frame, read_upstream_message, reset_broken_daemon_state,
-        resolve_socket_path, sort_tool_values, tool_cache_dir, urls_share_cache_scope,
-        write_downstream_message, write_tool_cache_if_changed, write_upstream_message,
+        handle_connection, handle_connection_with_idle_timeout, parse_status_response,
+        read_cached_tool_summaries, read_downstream_message_frame, read_upstream_message,
+        remove_tool_cache_if_present, reset_broken_daemon_state, resolve_socket_path,
+        sort_tool_values, tool_cache_dir, urls_share_cache_scope, write_downstream_message,
+        write_tool_cache_if_changed, write_upstream_message,
     };
 
     #[test]
@@ -2545,6 +2613,52 @@ mod tests {
                 socket_path.display()
             )
         );
+    }
+
+    #[test]
+    fn remove_tool_cache_if_present_deletes_existing_cache_file() {
+        let temp_dir = unique_temp_dir();
+        let cache_path = temp_dir.join("tools.json");
+        fs::write(&cache_path, "{}").expect("expected cache file");
+
+        assert!(
+            remove_tool_cache_if_present(&cache_path).expect("expected cache removal to succeed")
+        );
+        assert!(!cache_path.exists());
+    }
+
+    #[tokio::test]
+    async fn handle_connection_exits_after_idle_timeout() {
+        let temp_dir = unique_socket_temp_dir();
+        let socket_path = temp_dir.join("daemon.sock");
+        let tool_cache_path = temp_dir.join("tools.json");
+        let listener = UnixListener::bind(&socket_path).expect("expected socket listener");
+        let (bridge_stream, _upstream_stream) = duplex(1024);
+        let (bridge_reader, mut bridge_writer) = split(bridge_stream);
+        let mut bridge_reader = BufReader::new(bridge_reader);
+        let initialize_result = json!({
+            "protocolVersion": super::MCP_PROTOCOL_VERSION,
+            "capabilities": {}
+        });
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        timeout(
+            Duration::from_millis(200),
+            handle_connection_with_idle_timeout(
+                listener,
+                &mut bridge_reader,
+                &mut bridge_writer,
+                initialize_result,
+                "https://example.com",
+                &tool_cache_path,
+                0,
+                shutdown_rx,
+                Duration::from_millis(20),
+            ),
+        )
+        .await
+        .expect("expected idle timeout to complete")
+        .expect("expected bridge to exit cleanly");
     }
 
     fn unique_temp_dir() -> PathBuf {

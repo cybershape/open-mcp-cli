@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 mod daemon;
 mod tool;
+mod update;
 
 pub(crate) const CLI_COMMAND_NAME: &str = "omc";
 const CLI_ABOUT: &str = concat!(
@@ -41,6 +42,8 @@ enum Commands {
     Config(ConfigCommand),
     /// Refresh the cached tool list for the current URL
     Reload,
+    /// Update the current executable to the latest released version
+    Update,
     #[command(hide = true)]
     Daemon(DaemonCommand),
     #[command(external_subcommand)]
@@ -177,7 +180,7 @@ fn help_tool_rewrite_indices(args: &[OsString]) -> Option<(usize, usize)> {
 }
 
 fn is_builtin_help_target(target: &str) -> bool {
-    matches!(target, "config" | "daemon" | "help" | "reload")
+    matches!(target, "config" | "daemon" | "help" | "reload" | "update")
 }
 
 fn should_print_help(arg_count: usize) -> bool {
@@ -402,6 +405,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             };
             println!("tool cache {state} for {url} ({} tools)", status.tool_count);
         }
+        Some(Commands::Update) => update::run_update_command().await?,
         Some(Commands::Daemon(command)) => {
             run_daemon_command(
                 command,
@@ -463,7 +467,7 @@ async fn run_daemon_command(
 fn command_requires_runtime_checks(command: Option<&Commands>) -> bool {
     !matches!(
         command,
-        Some(Commands::Config(_)) | Some(Commands::Daemon(_))
+        Some(Commands::Config(_)) | Some(Commands::Daemon(_)) | Some(Commands::Update)
     )
 }
 
@@ -472,6 +476,7 @@ fn command_requires_config_url(command: Option<&Commands>) -> bool {
         None => true,
         Some(Commands::Config(_)) => false,
         Some(Commands::Reload) => true,
+        Some(Commands::Update) => false,
         Some(Commands::Daemon(DaemonCommand {
             command: DaemonSubcommands::Run,
             ..
@@ -484,7 +489,10 @@ fn command_requires_config_url(command: Option<&Commands>) -> bool {
 fn command_requires_daemon_ready(command: Option<&Commands>) -> bool {
     !matches!(
         command,
-        Some(Commands::Config(_)) | Some(Commands::Reload) | Some(Commands::Daemon(_))
+        Some(Commands::Config(_))
+            | Some(Commands::Reload)
+            | Some(Commands::Update)
+            | Some(Commands::Daemon(_))
     )
 }
 

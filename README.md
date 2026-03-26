@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/instal
 
 ## Requirements
 
-The CLI checks these prerequisites on startup for every invocation except `config`, `daemon status`, and `daemon exit`:
+The CLI checks these prerequisites on startup for every invocation except `config`, `update`, and all `daemon` commands:
 
 - `node` must be installed
 - `npx` must be installed
@@ -86,6 +86,14 @@ Refresh the cached tool list for the current URL and wait for the check to finis
 omc reload
 omc --url https://example.com reload
 ```
+
+Update the current `omc` executable to the latest release. If a newer release is available, the command downloads the matching archive, stops the running daemons it can discover, replaces the current executable in place, and restarts those daemons:
+
+```bash
+omc update
+```
+
+`omc update` replaces the currently running executable path, so the directory that contains that binary must be writable.
 
 Call a cached MCP tool by command name. Pass tool arguments with `--<parameter> <value>` only when the tool accepts parameters:
 
@@ -180,6 +188,8 @@ Different hosts use different default Unix sockets, so multiple daemons for diff
 
 Normal `omc <tool>` commands still auto-start a compatible background daemon when needed. That background startup path checks whether the daemon for the current host is already running, reuses it when compatible, restarts it when the version is incompatible, and waits until the MCP tool cache is ready before returning.
 
+If a daemon stays unused for 10 minutes, it exits automatically. The next `omc <tool>` command starts a new background daemon, waits for that daemon to complete its initial tool cache reload, and only then continues with the tool call.
+
 The daemon listens on a Unix socket and starts exactly one `npx -y mcp-remote <url>` child process for its lifetime. Before spawning `mcp-remote`, the CLI normalizes the configured URL: `https://ones.cn/...` is rewritten to `https://sz.ones.cn/...`, `https://ones.com/...` is rewritten to `https://us.ones.com/...`, and the final upstream URL always ends with `/mcp`. It keeps ownership of that stdio session so it can initialize MCP itself, refresh the cached tool list, and proxy the local client over the same upstream connection.
 
 `omc reload` performs an immediate synchronous `tools/list` fetch for the current URL. It updates the local cache file if the tool list changed, and exits only after that refresh check completes.
@@ -197,7 +207,7 @@ Use `--socket` to override the socket path.
 
 After startup, the daemon uses the same upstream stdio MCP session to complete the MCP initialize handshake, list all tools, and write the result to `tool-cache/<host>/tools.json` under the same directory as the daemon socket.
 
-If that MCP tool cache file for the current host is missing when a regular `omc <tool>` command checks startup state, the command waits until the daemon generates it before returning.
+When a new background daemon is started, the CLI removes any stale cache file for that host first, then waits until the daemon generates a fresh `tools.json` before continuing.
 
 If multiple downstream commands arrive at the same time, the daemon keeps all of those local MCP sessions open, forwards their requests over the shared upstream stdio session concurrently, rewrites request IDs to avoid collisions, and routes each response back to the originating client by request ID.
 

@@ -225,6 +225,15 @@ fn reload_requires_runtime_checks_and_config_url_but_not_daemon_ready() {
 }
 
 #[test]
+fn update_does_not_require_runtime_checks_config_or_daemon() {
+    let cli = Cli::try_parse_from(["omc", "update"]).expect("expected update command");
+
+    assert!(!command_requires_runtime_checks(cli.command.as_ref()));
+    assert!(!command_requires_config_url(cli.command.as_ref()));
+    assert!(!command_requires_daemon_ready(cli.command.as_ref()));
+}
+
+#[test]
 fn tool_commands_require_runtime_checks_and_daemon() {
     let cli = Cli::try_parse_from(["omc", "who_am_i"]).expect("expected tool command");
     assert!(command_requires_runtime_checks(cli.command.as_ref()));
@@ -248,6 +257,12 @@ fn parses_hidden_daemon_exit_subcommand() {
 fn parses_reload_subcommand() {
     let cli = Cli::try_parse_from(["omc", "reload"]).expect("expected reload");
     assert!(matches!(cli.command, Some(crate::Commands::Reload)));
+}
+
+#[test]
+fn parses_update_subcommand() {
+    let cli = Cli::try_parse_from(["omc", "update"]).expect("expected update");
+    assert!(matches!(cli.command, Some(crate::Commands::Update)));
 }
 
 #[test]
@@ -366,6 +381,18 @@ fn does_not_rewrite_help_subcommand_for_builtin_commands() {
             OsString::from("omc"),
             OsString::from("help"),
             OsString::from("reload"),
+        ]
+    );
+    assert_eq!(
+        rewrite_help_command_for_tool(&[
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("update"),
+        ]),
+        vec![
+            OsString::from("omc"),
+            OsString::from("help"),
+            OsString::from("update"),
         ]
     );
 }
