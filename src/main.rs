@@ -183,8 +183,8 @@ fn is_builtin_help_target(target: &str) -> bool {
     matches!(target, "config" | "daemon" | "help" | "reload" | "update")
 }
 
-fn should_print_help(arg_count: usize) -> bool {
-    arg_count == 1
+fn should_print_help(command: Option<&Commands>) -> bool {
+    command.is_none()
 }
 
 fn should_render_root_help_for_args<I, T>(args: I) -> bool
@@ -366,7 +366,7 @@ fn truncate_tool_description(description: &str, max_chars: usize) -> String {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
-    let arg_count = env::args_os().len();
+    let should_show_root_help = should_print_help(cli.command.as_ref());
     let config_path = resolve_config_path(cli.config.clone())?;
     let requires_config_url = command_requires_config_url(cli.command.as_ref());
     let effective_url = resolve_effective_url(
@@ -426,7 +426,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             .await?;
         }
         None => {
-            if should_print_help(arg_count) {
+            if should_show_root_help {
                 print!(
                     "{}",
                     render_root_help_with_tools(None, effective_url.as_deref())

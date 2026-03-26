@@ -3,7 +3,9 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::os::unix::process::CommandExt;
@@ -124,6 +126,8 @@ pub(crate) async fn run_daemon(
     let socket_path = resolve_socket_path(Some(url), socket_override)?;
     let control_socket_path = control_socket_path(&socket_path)?;
     let tool_cache_path = tool_cache_path(url, socket_override)?;
+    let pid_path = daemon_pid_path(&socket_path)?;
+    let _pid_guard = claim_daemon_pid(url, &socket_path, &control_socket_path, &pid_path)?;
 
     prepare_socket_path(&socket_path)?;
     prepare_socket_path(&control_socket_path)?;
@@ -224,8 +228,10 @@ pub(crate) fn spawn_detached_daemon(
     let control_socket_path = control_socket_path(&socket_path)?;
     let tool_cache_path = tool_cache_path(url, socket_override)?;
     let startup_log_path = daemon_startup_log_path(&control_socket_path)?;
+    let pid_path = daemon_pid_path(&socket_path)?;
     let mut command = std::process::Command::new(executable);
 
+    reuse_or_cleanup_existing_daemon(url, &socket_path, &control_socket_path, &pid_path)?;
     remove_tool_cache_if_present(&tool_cache_path)?;
 
     if let Some(path) = config_override {
@@ -256,8 +262,16 @@ pub(crate) fn spawn_detached_daemon(
     }
 
     let mut child = command.spawn()?;
-    wait_until_ready(&control_socket_path, &mut child, &startup_log_path)?;
-    wait_until_tool_cache_ready(&tool_cache_path, &mut child, &startup_log_path)?;
+    write_process_id_file(&pid_path, child.id(), "daemon pid")?;
+    if let Err(error) = wait_until_ready(&control_socket_path, &mut child, &startup_log_path) {
+        remove_process_id_file_if_present(&pid_path)?;
+        return Err(error);
+    }
+    if let Err(error) = wait_until_tool_cache_ready(&tool_cache_path, &mut child, &startup_log_path)
+    {
+        remove_process_id_file_if_present(&pid_path)?;
+        return Err(error);
+    }
     remove_startup_log_if_present(&startup_log_path);
     Ok(())
 }
@@ -420,7 +434,11 @@ fn default_socket_file_name(url: Option<&str>) -> String {
     }
 }
 
-fn control_socket_path(public_socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+fn daemon_pid_path(public_socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    socket_sibling_path(public_socket_path, "pid")
+}
+
+fn socket_sibling_path(public_socket_path: &Path, suffix: &str) -> Result<PathBuf, Box<dyn Error>> {
     let file_name = public_socket_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -429,7 +447,11 @@ fn control_socket_path(public_socket_path: &Path) -> Result<PathBuf, Box<dyn Err
         .parent()
         .ok_or("failed to determine socket directory")?;
 
-    Ok(parent.join(format!("{file_name}.ctl")))
+    Ok(parent.join(format!("{file_name}.{suffix}")))
+}
+
+fn control_socket_path(public_socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    socket_sibling_path(public_socket_path, "ctl")
 }
 
 fn prepare_socket_path(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -526,6 +548,193 @@ fn remove_tool_cache_if_present(path: &Path) -> Result<bool, Box<dyn Error>> {
             Err(format!("failed to inspect tool cache {}: {error}", path.display()).into())
         }
     }
+}
+
+fn claim_daemon_pid(
+    url: &str,
+    socket_path: &Path,
+    control_socket_path: &Path,
+    pid_path: &Path,
+) -> Result<ProcessFileGuard, Box<dyn Error>> {
+    let current_pid = std::process::id();
+
+    if let Some(existing_pid) = read_process_id_file(pid_path, "daemon pid")? {
+        if existing_pid != current_pid {
+            if process_is_alive(existing_pid)? {
+                if wait_for_existing_daemon_ready(control_socket_path, existing_pid)? {
+                    return Err(format!("daemon already running for {url}: pid {existing_pid}").into());
+                }
+
+                kill_process(existing_pid)?;
+            }
+
+            cleanup_daemon_runtime_state(socket_path, control_socket_path, pid_path)?;
+        }
+    }
+
+    write_process_id_file(pid_path, current_pid, "daemon pid")?;
+    Ok(ProcessFileGuard::new(pid_path.to_path_buf()))
+}
+
+fn reuse_or_cleanup_existing_daemon(
+    url: &str,
+    socket_path: &Path,
+    control_socket_path: &Path,
+    pid_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let Some(existing_pid) = read_process_id_file(pid_path, "daemon pid")? else {
+        return Ok(());
+    };
+
+    if !process_is_alive(existing_pid)? {
+        cleanup_daemon_runtime_state(socket_path, control_socket_path, pid_path)?;
+        return Ok(());
+    }
+
+    if wait_for_existing_daemon_ready(control_socket_path, existing_pid)? {
+        eprintln!("Reusing daemon for {url} with pid {existing_pid}");
+        return Ok(());
+    }
+
+    kill_process(existing_pid)?;
+    cleanup_daemon_runtime_state(socket_path, control_socket_path, pid_path)?;
+    Ok(())
+}
+
+fn wait_for_existing_daemon_ready(
+    control_socket_path: &Path,
+    pid: u32,
+) -> Result<bool, Box<dyn Error>> {
+    for _ in 0..DAEMON_READY_RETRIES {
+        match StdUnixStream::connect(control_socket_path) {
+            Ok(_) => return Ok(true),
+            Err(error) if is_stale_socket_error(error.kind()) => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to connect to daemon control socket {}: {error}",
+                    control_socket_path.display()
+                )
+                .into());
+            }
+        }
+
+        if !process_is_alive(pid)? {
+            return Ok(false);
+        }
+
+        std::thread::sleep(DAEMON_RETRY_DELAY);
+    }
+
+    Ok(false)
+}
+
+fn cleanup_daemon_runtime_state(
+    socket_path: &Path,
+    control_socket_path: &Path,
+    pid_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    remove_socket_file_if_present(socket_path)?;
+    remove_socket_file_if_present(control_socket_path)?;
+    remove_process_id_file_if_present(pid_path)?;
+    Ok(())
+}
+
+fn read_process_id_file(path: &Path, label: &str) -> Result<Option<u32>, Box<dyn Error>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let contents = contents.trim();
+            if contents.is_empty() {
+                return Ok(None);
+            }
+
+            let pid = contents.parse::<u32>().map_err(|error| {
+                format!("failed to parse {label} {}: {error}", path.display())
+            })?;
+            Ok(Some(pid))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("failed to read {label} {}: {error}", path.display()).into()),
+    }
+}
+
+fn write_process_id_file(path: &Path, pid: u32, label: &str) -> Result<(), Box<dyn Error>> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("failed to determine {} directory", label))?;
+    fs::create_dir_all(parent)?;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
+    writeln!(file, "{pid}")?;
+    Ok(())
+}
+
+fn remove_process_id_file_if_present(path: &Path) -> Result<bool, Box<dyn Error>> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("failed to remove daemon pid file {}: {error}", path.display()).into()),
+    }
+}
+
+fn process_is_alive(pid: u32) -> Result<bool, Box<dyn Error>> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EPERM) => Ok(true),
+        Some(libc::ESRCH) => Ok(false),
+        _ => Err(format!("failed to inspect daemon pid {pid}: {error}").into()),
+    }
+}
+
+fn kill_process(pid: u32) -> Result<(), Box<dyn Error>> {
+    if pid == std::process::id() {
+        return Err("refusing to kill the current process".into());
+    }
+
+    send_signal(pid, libc::SIGTERM)?;
+    if wait_for_process_exit(pid)? {
+        return Ok(());
+    }
+
+    send_signal(pid, libc::SIGKILL)?;
+    if wait_for_process_exit(pid)? {
+        return Ok(());
+    }
+
+    Err(format!("timed out waiting for daemon pid {pid} to exit").into())
+}
+
+fn send_signal(pid: u32, signal: libc::c_int) -> Result<(), Box<dyn Error>> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        _ => Err(format!("failed to signal daemon pid {pid}: {error}").into()),
+    }
+}
+
+fn wait_for_process_exit(pid: u32) -> Result<bool, Box<dyn Error>> {
+    for _ in 0..DAEMON_READY_RETRIES {
+        if !process_is_alive(pid)? {
+            return Ok(true);
+        }
+
+        std::thread::sleep(DAEMON_RETRY_DELAY);
+    }
+
+    Ok(false)
 }
 
 fn daemon_startup_log_path(control_socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
@@ -1872,6 +2081,30 @@ impl SocketFileGuard {
     }
 }
 
+#[derive(Debug)]
+struct ProcessFileGuard {
+    path: PathBuf,
+}
+
+impl ProcessFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for ProcessFileGuard {
+    fn drop(&mut self) {
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "failed to remove daemon pid file {}: {error}",
+                self.path.display()
+            ),
+        }
+    }
+}
+
 impl Drop for SocketFileGuard {
     fn drop(&mut self) {
         match fs::remove_file(&self.path) {
@@ -1953,10 +2186,11 @@ mod tests {
     use tokio::time::timeout;
 
     use super::{
-        ToolCache, cache_scope_key, cache_scope_path_component, call_tool, ensure_mcp_url_suffix,
-        handle_connection, handle_connection_with_idle_timeout, parse_status_response,
-        read_cached_tool_summaries, read_downstream_message_frame, read_upstream_message,
-        remove_tool_cache_if_present, reset_broken_daemon_state, resolve_socket_path,
+        ToolCache, cache_scope_key, cache_scope_path_component, call_tool, claim_daemon_pid,
+        daemon_pid_path, ensure_mcp_url_suffix, handle_connection,
+        handle_connection_with_idle_timeout, parse_status_response, read_cached_tool_summaries,
+        read_downstream_message_frame, read_upstream_message, remove_tool_cache_if_present,
+        reset_broken_daemon_state, resolve_socket_path, reuse_or_cleanup_existing_daemon,
         sort_tool_values, tool_cache_dir, urls_share_cache_scope, write_downstream_message,
         write_tool_cache_if_changed, write_upstream_message,
     };
@@ -2627,6 +2861,107 @@ mod tests {
         assert!(!cache_path.exists());
     }
 
+    #[test]
+    fn daemon_pid_path_is_resolved_next_to_socket() {
+        assert_eq!(
+            daemon_pid_path(Path::new("/tmp/daemon.sock")).expect("expected pid path"),
+            Path::new("/tmp/daemon.sock.pid")
+        );
+    }
+
+    #[test]
+    fn claim_daemon_pid_reuses_current_process_pid_file() {
+        let temp_dir = unique_temp_dir();
+        let socket_path = temp_dir.join("daemon.sock");
+        let control_socket_path =
+            super::control_socket_path(&socket_path).expect("expected control socket path");
+        let pid_path = daemon_pid_path(&socket_path).expect("expected pid path");
+        fs::write(&pid_path, format!("{}\n", std::process::id())).expect("expected pid file");
+
+        let guard = claim_daemon_pid(
+            "https://example.com",
+            &socket_path,
+            &control_socket_path,
+            &pid_path,
+        )
+        .expect("expected current process pid file to be reused");
+
+        assert_eq!(
+            fs::read_to_string(&pid_path)
+                .expect("expected pid file contents")
+                .trim(),
+            std::process::id().to_string()
+        );
+
+        drop(guard);
+        assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn claim_daemon_pid_rejects_existing_live_daemon() {
+        let temp_dir = unique_socket_temp_dir();
+        let socket_path = temp_dir.join("daemon.sock");
+        let control_socket_path =
+            super::control_socket_path(&socket_path).expect("expected control socket path");
+        let pid_path = daemon_pid_path(&socket_path).expect("expected pid path");
+        let listener =
+            StdUnixListener::bind(&control_socket_path).expect("expected control socket listener");
+        let accept_thread = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("expected child process");
+        fs::write(&pid_path, format!("{}\n", child.id())).expect("expected pid file");
+
+        let error =
+            claim_daemon_pid("https://example.com", &socket_path, &control_socket_path, &pid_path)
+                .expect_err("expected running daemon to be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            format!("daemon already running for https://example.com: pid {}", child.id())
+        );
+
+        child.kill().expect("expected child kill");
+        child.wait().expect("expected child wait");
+        accept_thread.join().expect("expected accept thread");
+    }
+
+    #[test]
+    fn reuse_or_cleanup_existing_daemon_removes_dead_pid_and_sockets() {
+        let temp_dir = unique_socket_temp_dir();
+        let socket_path = temp_dir.join("daemon.sock");
+        let control_socket_path =
+            super::control_socket_path(&socket_path).expect("expected control socket path");
+        let pid_path = daemon_pid_path(&socket_path).expect("expected pid path");
+        let _public_listener =
+            StdUnixListener::bind(&socket_path).expect("expected public socket listener");
+        let _control_listener =
+            StdUnixListener::bind(&control_socket_path).expect("expected control socket listener");
+        let mut child = std::process::Command::new("sleep")
+            .arg("1")
+            .spawn()
+            .expect("expected child process");
+        let dead_pid = child.id();
+        child.kill().expect("expected child kill");
+        child.wait().expect("expected child wait");
+        fs::write(&pid_path, format!("{dead_pid}\n")).expect("expected pid file");
+
+        reuse_or_cleanup_existing_daemon(
+            "https://example.com",
+            &socket_path,
+            &control_socket_path,
+            &pid_path,
+        )
+        .expect("expected stale daemon state cleanup");
+
+        assert!(!socket_path.exists());
+        assert!(!control_socket_path.exists());
+        assert!(!pid_path.exists());
+    }
+
     #[tokio::test]
     async fn handle_connection_exits_after_idle_timeout() {
         let temp_dir = unique_socket_temp_dir();
@@ -2675,8 +3010,7 @@ mod tests {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("expected monotonic clock")
-            .as_nanos()
-            % 1_000_000_000;
+            .as_nanos();
         let path = std::env::temp_dir().join(format!("omc-{suffix}"));
         std::fs::create_dir_all(&path).expect("expected temp dir");
         path

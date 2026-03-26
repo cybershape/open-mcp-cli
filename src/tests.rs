@@ -288,9 +288,18 @@ fn hides_daemon_subcommand_from_help() {
 }
 
 #[test]
-fn prints_help_only_when_no_arguments_are_provided() {
-    assert!(should_print_help(1));
-    assert!(!should_print_help(2));
+fn prints_help_when_no_subcommand_is_provided() {
+    assert!(should_print_help(None));
+    assert!(!should_print_help(Some(&crate::Commands::Reload)));
+}
+
+#[test]
+fn parses_top_level_url_without_subcommand() {
+    let cli = Cli::try_parse_from(["omc", "--url", "https://example.com"])
+        .expect("expected top-level url without subcommand");
+
+    assert_eq!(cli.url.as_deref(), Some("https://example.com"));
+    assert!(cli.command.is_none());
 }
 
 #[test]

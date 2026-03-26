@@ -188,6 +188,8 @@ Different hosts use different default Unix sockets, so multiple daemons for diff
 
 Normal `omc <tool>` commands still auto-start a compatible background daemon when needed. That background startup path checks whether the daemon for the current host is already running, reuses it when compatible, restarts it when the version is incompatible, and waits until the MCP tool cache is ready before returning.
 
+The daemon also keeps a PID file next to its socket. Startup refuses to launch a second daemon for the same URL while the recorded process is still alive, and stale PID or socket state is cleaned up before a replacement daemon starts.
+
 If a daemon stays unused for 60 minutes, it exits automatically. The next `omc <tool>` command starts a new background daemon, waits for that daemon to complete its initial tool cache reload, and only then continues with the tool call.
 
 The daemon listens on a Unix socket and starts exactly one `npx -y mcp-remote <url>` child process for its lifetime. Before spawning `mcp-remote`, the CLI normalizes the configured URL: `https://ones.cn/...` is rewritten to `https://sz.ones.cn/...`, `https://ones.com/...` is rewritten to `https://us.ones.com/...`, and the final upstream URL always ends with `/mcp`. It keeps ownership of that stdio session so it can initialize MCP itself, refresh the cached tool list, and proxy the local client over the same upstream connection.
