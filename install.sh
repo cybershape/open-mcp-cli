@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly REPOSITORY="${REPOSITORY:-tiejunhu/open-mcp-cli}"
+readonly REPOSITORY="${REPOSITORY:-cybershape/open-mcp-cli}"
 readonly BINARY_NAME="omc"
 readonly RELEASES_BASE="https://github.com/${REPOSITORY}/releases"
 

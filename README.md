@@ -7,7 +7,7 @@ Minimal CLI for MCP related operations.
 Install the latest release for the current platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/cybershape/open-mcp-cli/master/install.sh | bash
 ```
 
 The installer resolves the latest version through the GitHub Releases redirect path instead of the GitHub REST API, which avoids unauthenticated `api.github.com` rate limits.
@@ -19,13 +19,13 @@ If the final install directory is not already in `PATH`, the installer prints a 
 Install to a custom location instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | INSTALL_DIR=/tmp/omc/bin bash
+curl -fsSL https://raw.githubusercontent.com/cybershape/open-mcp-cli/master/install.sh | INSTALL_DIR=/tmp/omc/bin bash
 ```
 
 Install a specific released version instead of the latest one:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | VERSION=v0.0.2 bash
+curl -fsSL https://raw.githubusercontent.com/cybershape/open-mcp-cli/master/install.sh | VERSION=v0.0.2 bash
 ```
 
 ## Requirements

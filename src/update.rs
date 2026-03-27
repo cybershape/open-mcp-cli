@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::daemon;
 
 const BINARY_NAME: &str = "omc";
-const REPOSITORY: &str = "tiejunhu/open-mcp-cli";
+const REPOSITORY: &str = "cybershape/open-mcp-cli";
 
 #[derive(Debug, PartialEq, Eq)]
 struct RunningDaemon {
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn parses_latest_release_tag_from_redirect_target() {
         let tag = parse_latest_release_tag(
-            "https://github.com/tiejunhu/open-mcp-cli/releases/tag/v0.0.5",
+            "https://github.com/cybershape/open-mcp-cli/releases/tag/v0.0.5",
         )
         .expect("expected release tag");
 
