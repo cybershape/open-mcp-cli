@@ -150,12 +150,12 @@ fn root_help_appends_current_version_to_about() {
 
 #[test]
 fn daemon_socket_override_is_available_for_run() {
-    let cli = Cli::try_parse_from(["omc", "daemon", "--socket", "/tmp/ones-mcp-cli.sock", "run"])
+    let cli = Cli::try_parse_from(["omc", "daemon", "--socket", "/tmp/open-mcp-cli.sock", "run"])
         .expect("expected daemon run with socket");
 
     assert_eq!(
         command_socket_override(cli.command.as_ref()),
-        Some(Path::new("/tmp/ones-mcp-cli.sock"))
+        Some(Path::new("/tmp/open-mcp-cli.sock"))
     );
 }
 
@@ -498,7 +498,7 @@ fn parses_command_lines_from_clap_help() {
 
 #[test]
 fn root_help_includes_cached_tools_when_available() {
-    let temp_dir = std::env::temp_dir().join(format!("ones-mcp-cli-help-{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!("open-mcp-cli-help-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir).expect("expected temp dir");
     let socket_path = temp_dir.join("daemon.sock");
     let cache_dir = temp_dir.join("tool-cache").join("example.com");

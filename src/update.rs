@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::daemon;
 
 const BINARY_NAME: &str = "omc";
-const REPOSITORY: &str = "tiejunhu/ones-mcp-cli";
+const REPOSITORY: &str = "tiejunhu/open-mcp-cli";
 
 #[derive(Debug, PartialEq, Eq)]
 struct RunningDaemon {
@@ -39,7 +39,7 @@ pub(crate) async fn run_update_command() -> Result<(), Box<dyn Error>> {
 
     let executable_path = resolve_current_executable_path()?;
     let target = detect_target()?;
-    let temp_dir = TempDir::new("ones-mcp-cli-update")?;
+    let temp_dir = TempDir::new("open-mcp-cli-update")?;
     let asset_name = release_asset_name(&latest_tag, &target);
     let archive_path = temp_dir.path().join(&asset_name);
     let extracted_binary_path = temp_dir.path().join(BINARY_NAME);
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn parses_latest_release_tag_from_redirect_target() {
         let tag = parse_latest_release_tag(
-            "https://github.com/tiejunhu/ones-mcp-cli/releases/tag/v0.0.5",
+            "https://github.com/tiejunhu/open-mcp-cli/releases/tag/v0.0.5",
         )
         .expect("expected release tag");
 

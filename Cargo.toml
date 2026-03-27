@@ -1,5 +1,5 @@
 [package]
-name = "mcp-cli"
+name = "open-mcp-cli"
 version = "0.0.7"
 edition = "2024"
 

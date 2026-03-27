@@ -1,13 +1,13 @@
-# ones-mcp-cli
+# open mcp cli
 
-Minimal CLI for ONES MCP related operations.
+Minimal CLI for MCP related operations.
 
 ## Install
 
 Install the latest release for the current platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | bash
 ```
 
 The installer resolves the latest version through the GitHub Releases redirect path instead of the GitHub REST API, which avoids unauthenticated `api.github.com` rate limits.
@@ -19,13 +19,13 @@ If the final install directory is not already in `PATH`, the installer prints a 
 Install to a custom location instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | INSTALL_DIR=/tmp/omc/bin bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | INSTALL_DIR=/tmp/omc/bin bash
 ```
 
 Install a specific released version instead of the latest one:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tiejunhu/ones-mcp-cli/master/install.sh | VERSION=v0.0.2 bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/open-mcp-cli/master/install.sh | VERSION=v0.0.2 bash
 ```
 
 ## Requirements
@@ -56,7 +56,7 @@ If a check fails, the CLI prints a clear error and exits with a non-zero status.
 If `url` is missing, the CLI prints a setup hint such as:
 
 ```text
-fatal error: missing `url` in config file ~/.config/ones-mcp-cli/config.toml. Configure it with: omc config --url <URL>
+fatal error: missing `url` in config file ~/.config/open-mcp-cli/config.toml. Configure it with: omc config --url <URL>
 ```
 
 ## Usage
@@ -135,13 +135,13 @@ omc daemon exit
 Start the daemon on a custom Unix socket path:
 
 ```bash
-omc daemon --socket /tmp/ones-mcp-cli.sock run
+omc daemon --socket /tmp/open-mcp-cli.sock run
 ```
 
 Save the service URL to a custom config file:
 
 ```bash
-omc --config /tmp/ones-mcp-cli/config.toml config --url https://example.com
+omc --config /tmp/open-mcp-cli/config.toml config --url https://example.com
 ```
 
 The URL must start with `http://` or `https://`.
@@ -149,7 +149,7 @@ The URL must start with `http://` or `https://`.
 By default the command writes the configuration to:
 
 ```text
-~/.config/ones-mcp-cli/config.toml
+~/.config/open-mcp-cli/config.toml
 ```
 
 Use the global `--config` option to override that path.
@@ -192,7 +192,7 @@ The daemon also keeps a PID file next to its socket. Startup refuses to launch a
 
 If a daemon stays unused for 60 minutes, it exits automatically. The next `omc <tool>` command starts a new background daemon, waits for that daemon to complete its initial tool cache reload, and only then continues with the tool call.
 
-The daemon listens on a Unix socket and starts exactly one `npx -y mcp-remote <url>` child process for its lifetime. Before spawning `mcp-remote`, the CLI normalizes the configured URL: `https://ones.cn/...` is rewritten to `https://sz.ones.cn/...`, `https://ones.com/...` is rewritten to `https://us.ones.com/...`, and the final upstream URL always ends with `/mcp`. It keeps ownership of that stdio session so it can initialize MCP itself, refresh the cached tool list, and proxy the local client over the same upstream connection.
+The daemon listens on a Unix socket and starts exactly one `npx -y mcp-remote <url>` child process for its lifetime. It passes the configured URL through unchanged, then keeps ownership of that stdio session so it can initialize MCP itself, refresh the cached tool list, and proxy the local client over the same upstream connection.
 
 `omc reload` performs an immediate synchronous `tools/list` fetch for the current URL. It updates the local cache file if the tool list changed, and exits only after that refresh check completes.
 
@@ -202,8 +202,8 @@ The daemon also opens a control socket next to the public socket with the `.ctl`
 
 The default socket path is:
 
-- `$XDG_RUNTIME_DIR/ones-mcp-cli/daemon-<host>.sock` when `XDG_RUNTIME_DIR` is set
-- `~/.cache/ones-mcp-cli/daemon-<host>.sock` otherwise
+- `$XDG_RUNTIME_DIR/open-mcp-cli/daemon-<host>.sock` when `XDG_RUNTIME_DIR` is set
+- `~/.cache/open-mcp-cli/daemon-<host>.sock` otherwise
 
 Use `--socket` to override the socket path.
 

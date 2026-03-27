@@ -14,8 +14,9 @@ mod tool;
 mod update;
 
 pub(crate) const CLI_COMMAND_NAME: &str = "omc";
+const CONFIG_DIR_NAME: &str = "open-mcp-cli";
 const CLI_ABOUT: &str = concat!(
-    "ONES MCP command line interface ",
+    "Open MCP command line interface ",
     env!("CARGO_PKG_VERSION")
 );
 const ROOT_HELP_HIDDEN_TOOLS: &[&str] = &["search", "fetch"];
@@ -28,7 +29,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// ONES service URL, overrides the configured url for this invocation
+    /// Service URL, overrides the configured url for this invocation
     #[arg(long, value_parser = parse_url)]
     url: Option<String>,
 
@@ -53,7 +54,7 @@ enum Commands {
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, arg_required_else_help = true)]
 struct ConfigCommand {
-    /// ONES service URL, must start with http:// or https://
+    /// Service URL, must start with http:// or https://
     #[arg(long, value_parser = parse_url)]
     url: Option<String>,
 
@@ -712,10 +713,18 @@ fn parse_url(value: &str) -> Result<String, String> {
 
 fn default_config_path() -> Result<PathBuf, Box<dyn Error>> {
     let home_dir = env::var_os("HOME").ok_or("HOME environment variable is not set")?;
-    Ok(PathBuf::from(home_dir)
+    Ok(default_config_path_for_home(Path::new(&home_dir)))
+}
+
+fn default_config_path_for_home(home_dir: &Path) -> PathBuf {
+    config_path_for_home(home_dir, CONFIG_DIR_NAME)
+}
+
+fn config_path_for_home(home_dir: &Path, directory_name: &str) -> PathBuf {
+    home_dir
         .join(".config")
-        .join("ones-mcp-cli")
-        .join("config.toml"))
+        .join(directory_name)
+        .join("config.toml")
 }
 
 fn resolve_config_path(path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
